@@ -1,0 +1,255 @@
+"""CRUD + test-connection for Connection rows.
+
+Mirrors the structure of `ai_providers.service`:
+  - Audit log entries written for every mutation, with a `flush()` between the
+    insert and the audit row so the auto-generated id is available (see
+    CLAUDE.md note about default=lambda firing at flush time).
+  - Credentials are read from the existing Secrets store by name — never
+    embedded in the Connection row.
+"""
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+from ..secrets.encryption import encryption_service
+from ..secrets.models import AuditLog, Secret
+from .drivers import rest as rest_driver
+from .drivers import sql as sql_driver
+from .drivers.sql import DriverNotInstalledError
+from .models import Connection
+from .schemas import ConnectionCreate, ConnectionResponse, ConnectionTestResult, ConnectionUpdate
+
+
+class ConnectionsService:
+    async def list_connections(self, db: AsyncSession) -> list[ConnectionResponse]:
+        result = await db.execute(select(Connection).order_by(Connection.name))
+        return [self._to_response(c) for c in result.scalars().all()]
+
+    async def get_connection(self, db: AsyncSession, connection_id: str) -> Optional[ConnectionResponse]:
+        result = await db.execute(select(Connection).where(Connection.id == connection_id))
+        conn = result.scalar_one_or_none()
+        return self._to_response(conn) if conn else None
+
+    async def _get_row(self, db: AsyncSession, connection_id: str) -> Optional[Connection]:
+        result = await db.execute(select(Connection).where(Connection.id == connection_id))
+        return result.scalar_one_or_none()
+
+    async def create_connection(
+        self, db: AsyncSession, data: ConnectionCreate, user_id: str
+    ) -> ConnectionResponse:
+        conn = Connection(
+            name=data.name,
+            description=data.description,
+            kind=data.kind,
+            config=data.config,
+            credential_secret_ref=data.credential_secret_ref,
+            default_row_limit=data.default_row_limit,
+            default_timeout_seconds=data.default_timeout_seconds,
+            read_only=data.read_only,
+            created_by=user_id,
+        )
+        db.add(conn)
+        try:
+            await db.flush()  # populate conn.id before AuditLog references it
+        except IntegrityError:
+            await db.rollback()
+            raise ValueError(f"A connection named '{data.name}' already exists")
+
+        db.add(AuditLog(
+            user_id=user_id,
+            action="connection.create",
+            resource_type="connection",
+            resource_id=conn.id,
+            details=f"Created {data.kind} connection '{data.name}'",
+        ))
+        await db.commit()
+        await db.refresh(conn)
+        return self._to_response(conn)
+
+    async def update_connection(
+        self, db: AsyncSession, connection_id: str, data: ConnectionUpdate, user_id: str
+    ) -> Optional[ConnectionResponse]:
+        conn = await self._get_row(db, connection_id)
+        if not conn:
+            return None
+
+        if data.name is not None:
+            conn.name = data.name
+        if data.description is not None:
+            conn.description = data.description
+        if data.config is not None:
+            conn.config = data.config
+        if data.credential_secret_ref is not None:
+            conn.credential_secret_ref = data.credential_secret_ref or None
+        if data.default_row_limit is not None:
+            conn.default_row_limit = data.default_row_limit
+        if data.default_timeout_seconds is not None:
+            conn.default_timeout_seconds = data.default_timeout_seconds
+        if data.read_only is not None:
+            conn.read_only = data.read_only
+        conn.updated_at = datetime.now(timezone.utc)
+
+        db.add(AuditLog(
+            user_id=user_id,
+            action="connection.update",
+            resource_type="connection",
+            resource_id=conn.id,
+            details=f"Updated connection '{conn.name}'",
+        ))
+        await db.commit()
+        await db.refresh(conn)
+        return self._to_response(conn)
+
+    async def delete_connection(self, db: AsyncSession, connection_id: str, user_id: str) -> bool:
+        conn = await self._get_row(db, connection_id)
+        if not conn:
+            return False
+
+        # Block deletion if any datasets reference this connection. SQLite
+        # doesn't enforce FKs by default, so we have to check ourselves —
+        # otherwise the dataset rows would silently dangle.
+        # Lazy import to avoid a circular dep at module load.
+        from ..datasets.models import Dataset
+        existing = (await db.execute(
+            select(Dataset).where(Dataset.connection_id == connection_id)
+        )).scalars().all()
+        if existing:
+            names = ", ".join(d.name for d in existing[:5])
+            more = "" if len(existing) <= 5 else f" (+{len(existing) - 5} more)"
+            raise ValueError(
+                f"Cannot delete connection '{conn.name}': "
+                f"{len(existing)} dataset(s) still reference it: {names}{more}. "
+                "Delete the datasets first."
+            )
+
+        db.add(AuditLog(
+            user_id=user_id,
+            action="connection.delete",
+            resource_type="connection",
+            resource_id=conn.id,
+            details=f"Deleted connection '{conn.name}'",
+        ))
+        await db.delete(conn)
+        await db.commit()
+        return True
+
+    async def test_connection(
+        self, db: AsyncSession, connection_id: str, user_id: str
+    ) -> ConnectionTestResult:
+        conn = await self._get_row(db, connection_id)
+        if not conn:
+            return ConnectionTestResult(success=False, message="Connection not found")
+
+        credential = await self.resolve_credential(db, conn.credential_secret_ref)
+
+        start = time.time()
+        try:
+            if conn.kind == "sql":
+                await self._test_sql(conn, credential)
+            elif conn.kind == "rest":
+                await self._test_rest(conn, credential)
+            else:
+                return ConnectionTestResult(success=False, message=f"Unknown kind '{conn.kind}'")
+        except DriverNotInstalledError as e:
+            return ConnectionTestResult(success=False, message=str(e))
+        except Exception as e:
+            return ConnectionTestResult(success=False, message=str(e))
+        finally:
+            db.add(AuditLog(
+                user_id=user_id,
+                action="connection.test",
+                resource_type="connection",
+                resource_id=conn.id,
+                details=f"Tested connection '{conn.name}'",
+            ))
+            await db.commit()
+
+        elapsed = int((time.time() - start) * 1000)
+        return ConnectionTestResult(success=True, message="Connection successful", response_time_ms=elapsed)
+
+    async def resolve_credential(self, db: AsyncSession, ref: str | None) -> str | None:
+        if not ref:
+            return None
+        result = await db.execute(select(Secret).where(Secret.name == ref))
+        secret = result.scalar_one_or_none()
+        if not secret or not secret.encrypted_value:
+            return None
+        return encryption_service.decrypt(secret.encrypted_value)
+
+    async def _test_sql(self, conn: Connection, password: str | None) -> None:
+        dialect = sql_driver.get_dialect(conn.config.get("dialect", ""))
+        sql_driver.ensure_driver(dialect)
+        url = sql_driver.build_url(conn.config, password=password)
+        engine = create_async_engine(url, pool_pre_ping=False)
+        try:
+            async with engine.connect() as c:
+                from sqlalchemy import text as _text
+                await c.execute(_text("SELECT 1"))
+        finally:
+            await engine.dispose()
+
+    async def _test_rest(self, conn: Connection, secret: str | None) -> None:
+        client = rest_driver.build_client(
+            conn.config,
+            secret=secret,
+            timeout_seconds=conn.default_timeout_seconds,
+        )
+        try:
+            # HEAD against the base URL; some servers don't support HEAD on "/",
+            # so accept any HTTP response (including 4xx) as proof the host
+            # answered. We only fail on transport errors.
+            await client.request("HEAD", "")
+        finally:
+            await client.aclose()
+
+    def _to_response(self, conn: Connection) -> ConnectionResponse:
+        return ConnectionResponse(
+            id=conn.id,
+            name=conn.name,
+            description=conn.description or "",
+            kind=conn.kind,
+            config=_scrub_config_for_response(conn.config or {}),
+            credential_secret_ref=conn.credential_secret_ref,
+            default_row_limit=conn.default_row_limit,
+            default_timeout_seconds=conn.default_timeout_seconds,
+            read_only=conn.read_only,
+            created_by=conn.created_by,
+            created_at=conn.created_at.isoformat(),
+            updated_at=conn.updated_at.isoformat(),
+        )
+
+
+# Keys we redact from `config` before returning it on the wire. Admins can
+# legitimately put auth-helper params like Trusted_Connection in extra_params,
+# but if they paste a literal password / token there we MUST NOT round-trip it.
+# Comparison is case-insensitive.
+_REDACTED_KEYS = frozenset({
+    "pwd", "password", "passwd", "pass", "secret",
+    "api_key", "apikey", "access_key", "auth_token", "token",
+})
+
+_REDACTED_PLACEHOLDER = "***REDACTED***"
+
+
+def _scrub_config_for_response(config: dict) -> dict:
+    """Return a copy of `config` with password-like keys replaced by a
+    placeholder. Recurses into `extra_params` (where pyodbc-style PWD usually
+    sneaks in). Case-insensitive match against _REDACTED_KEYS."""
+    out: dict = {}
+    for k, v in (config or {}).items():
+        if isinstance(k, str) and k.lower() in _REDACTED_KEYS and v not in (None, ""):
+            out[k] = _REDACTED_PLACEHOLDER
+        elif isinstance(v, dict):
+            out[k] = _scrub_config_for_response(v)
+        else:
+            out[k] = v
+    return out
+
+
+connections_service = ConnectionsService()

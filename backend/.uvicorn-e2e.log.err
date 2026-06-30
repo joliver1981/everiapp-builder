@@ -1,0 +1,18 @@
+INFO:     Started server process [13240]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8800 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56758 - "WebSocket /api/ai/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57422 - "WebSocket /api/ai/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:57647 - "WebSocket /api/ai/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:58645 - "WebSocket /api/ai/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60147 - "WebSocket /api/ai/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed

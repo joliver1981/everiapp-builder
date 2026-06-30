@@ -1,0 +1,3 @@
+# This file keeps the data/ directory present in a fresh clone.
+# The platform SQLite database (data/aihub.db) and its WAL/SHM sidecars are
+# git-ignored and created automatically on first boot. Do not commit DB files.

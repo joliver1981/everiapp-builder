@@ -1,0 +1,59 @@
+# AIHub on-prem — single-host Docker Compose distribution.
+#
+# One artifact for any OS that runs Docker. The platform (backend + built
+# frontend) runs in one container; data persists in a named volume so upgrades
+# (docker compose pull && up -d) keep the SQLite DB + app files.
+#
+# Quick start:
+#   1. cp .env.example .env  and edit secrets (JWT_SECRET_KEY, MASTER_ENCRYPTION_KEY)
+#   2. docker compose up -d
+#   3. open http://localhost:8800   (admin / password in dev; change for prod)
+#
+# The agent is a SEPARATE install on each target host (see aihub-agent/installer).
+# This compose file is the control plane only.
+
+services:
+  aihub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: aihub-platform:latest
+    container_name: aihub-platform
+    restart: unless-stopped
+    # Cap container logs; the default json-file driver grows without bound otherwise.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    ports:
+      - "8800:8800"
+    environment:
+      # REQUIRED for production — generate strong random values.
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}"
+      MASTER_ENCRYPTION_KEY: "${MASTER_ENCRYPTION_KEY:-}"
+      # Optional license (or mount data/license.key into the volume)
+      AIHUB_LICENSE: "${AIHUB_LICENSE:-}"
+      # Point the DB at the persistent volume
+      DATABASE_URL: "sqlite+aiosqlite:////data/aihub.db"
+      APP_DATA_DIR: "/data/apps"
+      AUDIT_ARCHIVE_DIR: "/data/archives"
+      DEBUG: "${DEBUG:-false}"
+      # AD/LDAP can also be configured at runtime via the admin UI.
+      AD_MODE: "${AD_MODE:-mock}"
+      # Transport security (see .env.example). Empty COOKIE_SECURE = auto-detect
+      # from the request scheme (works behind a TLS proxy that forwards proto).
+      COOKIE_SECURE: "${COOKIE_SECURE:-}"
+      HSTS_ENABLED: "${HSTS_ENABLED:-true}"
+    volumes:
+      - aihub-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8800/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  aihub-data:
+    driver: local

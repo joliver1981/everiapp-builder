@@ -1,0 +1,86 @@
+[project]
+name = "aihub-backend"
+version = "0.1.0"
+description = "AIHub Platform - AI-powered app development and deployment"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "alembic>=1.14.0",
+    "litellm>=1.55.0",
+    "pyjwt>=2.10.0",
+    "cryptography>=44.0.0",
+    "python-multipart>=0.0.18",
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.28.0",
+    "websockets>=14.0",
+    "python-dotenv>=1.0.0",
+    "asyncssh>=2.18.0",
+    "playwright>=1.49.0",
+    "click>=8.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+aihub = "src.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+]
+ldap = [
+    "ldap3>=2.9.0",
+]
+# SAML 2.0 SSO (SP side). Opt-in: pulls lxml + xmlsec (C extensions). On
+# Windows, prebuilt wheels for `xmlsec` + `lxml` make `pip install .[saml]`
+# work without a toolchain. Install with:  pip install -e .[saml]
+saml = [
+    "python3-saml>=1.16.0",
+]
+
+# --- External DB drivers for platform Connections --------------------------
+# Installed on demand by admins who need a given dialect. sqlite is bundled
+# in the base deps (aiosqlite). The async wrappers below are what the
+# connections.drivers.sql registry expects:
+#   postgres → asyncpg
+#   mysql    → aiomysql
+#   mssql    → aioodbc (requires the system ODBC Driver 17 for SQL Server
+#              or newer to also be installed at the OS level)
+#   oracle   → oracledb (Oracle's pure-Python async driver, 1.x supports asyncio)
+# Install with:  pip install -e .[postgres,mysql,mssql,oracle]
+postgres = ["asyncpg>=0.29.0"]
+mysql = ["aiomysql>=0.2.0"]
+mssql = [
+    "aioodbc>=0.5.0",
+    "pyodbc>=5.0.0",
+]
+oracle = ["oracledb>=2.0.0"]
+# Convenience meta-extra: every dialect at once.
+all-dbs = [
+    "asyncpg>=0.29.0",
+    "aiomysql>=0.2.0",
+    "aioodbc>=0.5.0",
+    "pyodbc>=5.0.0",
+    "oracledb>=2.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "journey: multi-step user-journey end-to-end tests against a real DB",
+    "quality: production-readiness / robustness tests against a real DB",
+    "slow: long-running test (30s+)",
+]

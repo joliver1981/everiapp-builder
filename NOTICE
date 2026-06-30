@@ -1,0 +1,11 @@
+AIHub
+Copyright 2026 EveriAI, LLC
+
+This product is licensed under the Apache License, Version 2.0 (the "License").
+See the LICENSE file for the full terms.
+
+This software includes third-party open-source components, each distributed
+under its own license. Notable dependencies include FastAPI, SQLAlchemy,
+LiteLLM, React, and Vite (MIT/BSD/Apache-licensed). The optional LDAP feature
+uses ldap3 (LGPL-3.0). Run `pip-licenses` (Python) and `npm-license-checker`
+(JavaScript) for a full, current inventory.

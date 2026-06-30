@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".venv/Scripts/python.exe",
+            "args": [".claude/hooks/green-gate.py"],
+            "timeout": 180,
+            "statusMessage": "green-gate: running tests + tsc..."
+          }
+        ]
+      }
+    ]
+  }
+}
