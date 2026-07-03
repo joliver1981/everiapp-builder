@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from .config import settings, validate_settings_for_production
+from .version import PLATFORM_VERSION
 from .database import init_db
 from .middleware import setup_middleware
 
@@ -160,7 +161,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AIHub Platform",
     description="AI-powered app development and deployment platform",
-    version="0.2.0",
+    version=PLATFORM_VERSION,
     lifespan=lifespan,
 )
 
@@ -247,7 +248,7 @@ async def health_check():
         status_code=200 if db_ok else 503,
         content={
             "status": "healthy" if db_ok else "degraded",
-            "version": "0.2.0",
+            "version": PLATFORM_VERSION,
             "debug": settings.debug,
             "uptime_seconds": uptime,
             "database": "ok" if db_ok else "error",

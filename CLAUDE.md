@@ -75,6 +75,19 @@ If a Connection's dialect doesn't have its Python driver installed, the "Test co
 
 **MSSQL regression tests** (`tests/test_data/test_mssql_http.py`) are skipped automatically when `pyodbc` isn't importable or when no local SQL Server is reachable at `localhost` with Windows auth on the `AIHUB_TEST_MSSQL_DB` database (default `LLMDB`). When you do have the local instance running, they lock in the cross-dialect row-cap mechanism — see [this comment](backend/src/datasets/runtime.py) for why we use `fetchmany(N+1)` instead of `SELECT * FROM (sql) LIMIT N`.
 
+## Version discipline
+
+The platform version lives in exactly two places — bump BOTH together
+whenever a user-visible change lands (minor for features, patch for fixes):
+
+1. `backend/src/version.py` → `PLATFORM_VERSION`
+2. `frontend/package.json` → `"version"` (then rebuild `frontend/dist` if
+   users browse the built SPA on :8800)
+
+The sidebar shows `v{UI} · API v{backend}` and flags a mismatch — that's the
+"am I looking at a stale bundle/backend?" indicator. Don't add version
+literals anywhere else; import `PLATFORM_VERSION` / use `__APP_VERSION__`.
+
 ## Don'ts
 
 - Don't claim a feature is done if `green-gate.py` is red.

@@ -82,8 +82,9 @@ async def system_status(db: AsyncSession = Depends(get_db),
         "scheduled_backups": bool(cfg.get("backup_enabled")),
     }
 
+    from ..version import PLATFORM_VERSION
     return {
-        "version": "0.2.0",
+        "version": PLATFORM_VERSION,
         "debug": settings.debug,
         "uptime_seconds": uptime,
         "running_apps": running_apps,

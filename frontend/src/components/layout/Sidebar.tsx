@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -49,6 +50,18 @@ export function Sidebar() {
 
   const visibleItems = navItems.filter((item) => item.roles.includes(userRole))
 
+  // UI vs API version: a mismatch means a stale SPA bundle (rebuild/refresh)
+  // or a stale backend process (restart) — surfaced here so nobody debugs a
+  // "missing feature" that's really an old build.
+  const [apiVersion, setApiVersion] = useState<string | null>(null)
+  useEffect(() => {
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((h) => setApiVersion(h?.version ?? null))
+      .catch(() => setApiVersion(null))
+  }, [])
+  const versionMismatch = apiVersion !== null && apiVersion !== __APP_VERSION__
+
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-border bg-card">
       <div className="flex items-center gap-3 px-6 py-5">
@@ -83,6 +96,18 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-border p-4">
+        <p
+          className={cn(
+            'mb-2 text-[10px]',
+            versionMismatch ? 'font-medium text-amber-500' : 'text-muted-foreground/70',
+          )}
+          title={versionMismatch
+            ? `UI bundle (v${__APP_VERSION__}) and backend (v${apiVersion}) differ — hard-refresh, rebuild the frontend, or restart the backend.`
+            : 'Platform version (UI bundle · backend API)'}
+        >
+          v{__APP_VERSION__} · API {apiVersion ? `v${apiVersion}` : '…'}
+          {versionMismatch && ' — version mismatch!'}
+        </p>
         <div className="flex items-center justify-between">
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{user?.display_name}</p>
