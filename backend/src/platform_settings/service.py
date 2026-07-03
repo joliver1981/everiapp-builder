@@ -80,7 +80,9 @@ async def get_setting(db: AsyncSession, key: str) -> Any:
         return DEFAULTS.get(key)
 
 
-async def set_setting(db: AsyncSession, key: str, value: Any) -> None:
+async def set_setting(db: AsyncSession, key: str, value: Any, commit: bool = True) -> None:
+    """commit=False stages the write for the caller's own commit — used when a
+    setting must land atomically with other rows (e.g. its audit-log entry)."""
     row = (await db.execute(
         select(PlatformSetting).where(PlatformSetting.key == key)
     )).scalar_one_or_none()
@@ -90,7 +92,8 @@ async def set_setting(db: AsyncSession, key: str, value: Any) -> None:
     else:
         row.value_json = json.dumps(value)
         row.updated_at = datetime.now(timezone.utc)
-    await db.commit()
+    if commit:
+        await db.commit()
 
 
 async def get_all(db: AsyncSession) -> dict[str, Any]:

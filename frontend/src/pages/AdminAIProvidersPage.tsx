@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Plus, Pencil, Trash2, Loader2, Bot, CheckCircle, XCircle, Zap, Play } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Bot, CheckCircle, XCircle, Zap, Play, SlidersHorizontal } from 'lucide-react'
 import { apiClient } from '@/api/client'
-import type { AIProvider } from '@/types'
+import type { AIProvider, AIPurposeDefault } from '@/types'
 import { cn } from '@/lib/utils'
 
 // Suggested CURRENT models (refreshed mid-2026). The model field is a free-type
@@ -75,8 +75,17 @@ function ModelCombobox({
   )
 }
 
+// Human wording for where a purpose's effective provider came from.
+const PURPOSE_SOURCE_LABELS: Record<string, string> = {
+  pinned: 'pinned',
+  legacy_default: 'provider default flag',
+  inherited_generation: 'inherited from App generation',
+  first_active: 'first active provider',
+}
+
 export function AdminAIProvidersPage() {
   const [providers, setProviders] = useState<AIProvider[]>([])
+  const [purposes, setPurposes] = useState<AIPurposeDefault[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)  // null = create mode
@@ -94,14 +103,61 @@ export function AdminAIProvidersPage() {
     is_default_toggle: false,
   })
 
+  // Local drafts for the per-purpose model override inputs (committed on blur).
+  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({})
+  // One purpose PUT in flight at a time: all purpose controls disable while
+  // saving, so out-of-order responses can't clobber state or drafts.
+  const [pinSaving, setPinSaving] = useState(false)
+
   const fetchProviders = async () => {
     setIsLoading(true)
     try {
       const data = await apiClient.get<AIProvider[]>('/admin/ai-providers')
       setProviders(data)
+      // Separate try: a purposes failure (e.g. transient 500) must not blank
+      // the provider list — that's the page the admin recovers with.
+      try {
+        applyPurposes(await apiClient.get<AIPurposeDefault[]>('/admin/ai-providers/purposes'))
+      } catch {
+        setPurposes([])
+      }
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const applyPurposes = (rows: AIPurposeDefault[]) => {
+    setPurposes(rows)
+    setModelDrafts(Object.fromEntries(rows.map((row) => [row.purpose, row.model || ''])))
+  }
+
+  const savePin = async (purpose: string, providerId: string | null, model: string | null) => {
+    setPinSaving(true)
+    try {
+      applyPurposes(await apiClient.put<AIPurposeDefault[]>(
+        `/admin/ai-providers/purposes/${purpose}`,
+        { provider_id: providerId, model },
+      ))
+    } catch (e: any) {
+      setTestResult({ success: false, message: `Saving purpose default failed: ${e.message}` })
+      // Resync so the controls reflect what's actually stored.
+      try {
+        applyPurposes(await apiClient.get<AIPurposeDefault[]>('/admin/ai-providers/purposes'))
+      } catch { /* keep whatever we had */ }
+    } finally {
+      setPinSaving(false)
+    }
+  }
+
+  const handlePinProvider = (purpose: string, providerId: string) =>
+    // Switching providers drops any model override — it was provider-specific.
+    savePin(purpose, providerId || null, null)
+
+  const handleModelOverrideBlur = (row: AIPurposeDefault) => {
+    if (!row.provider_id) return
+    const draft = (modelDrafts[row.purpose] || '').trim()
+    if (draft === (row.model || '')) return
+    return savePin(row.purpose, row.provider_id, draft || null)
   }
 
   useEffect(() => {
@@ -390,6 +446,7 @@ export function AdminAIProvidersPage() {
             </p>
           </div>
         ) : (
+          <>
           <div className="space-y-3">
             {providers.map((provider) => (
               <div
@@ -449,8 +506,8 @@ export function AdminAIProvidersPage() {
                           : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                       )}
                       title={provider.is_default_generation
-                        ? 'Default for app generation'
-                        : 'Make default for app generation'}
+                        ? 'Default for app generation (a Purpose defaults pin below overrides this)'
+                        : 'Make default for app generation (a Purpose defaults pin below overrides this)'}
                     >
                       <Zap size={12} />
                     </button>
@@ -473,6 +530,74 @@ export function AdminAIProvidersPage() {
               </div>
             ))}
           </div>
+
+          {/* Purpose defaults: which provider answers each kind of platform LLM call.
+              Unpinned purposes inherit the App generation default, so this section
+              is optional — it exists for "cheap model for X, big model for Y" setups. */}
+          <div className="mt-8">
+            <div className="mb-3 flex items-center gap-2">
+              <SlidersHorizontal size={16} className="text-muted-foreground" />
+              <h3 className="text-sm font-semibold">Purpose defaults</h3>
+            </div>
+            <p className="mb-4 text-xs text-muted-foreground">
+              Pin a provider (and optionally a model) per kind of AI call. Anything left
+              on Automatic inherits the app-generation default.
+            </p>
+            <div className="space-y-3">
+              {purposes.map((row) => (
+                <div key={row.purpose} className="rounded-xl border border-border bg-card px-6 py-4">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="min-w-64 flex-1">
+                      <h4 className="text-sm font-medium">{row.label}</h4>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{row.description}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={row.provider_id || ''}
+                        onChange={(e) => handlePinProvider(row.purpose, e.target.value)}
+                        disabled={pinSaving}
+                        className="rounded-lg border border-input bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                      >
+                        <option value="">Automatic</option>
+                        {providers.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                        {/* Pins are cleared when a provider is deleted, but rows
+                            written before that existed can still dangle — keep
+                            the state legible instead of rendering blank. */}
+                        {row.provider_id && !providers.some((p) => p.id === row.provider_id) && (
+                          <option value={row.provider_id}>(deleted provider)</option>
+                        )}
+                      </select>
+                      <input
+                        value={modelDrafts[row.purpose] || ''}
+                        onChange={(e) => setModelDrafts({ ...modelDrafts, [row.purpose]: e.target.value })}
+                        onBlur={() => handleModelOverrideBlur(row)}
+                        disabled={pinSaving || !row.provider_id || !providers.some((p) => p.id === row.provider_id)}
+                        placeholder="provider's default model"
+                        title={row.provider_id ? 'Optional model override for this purpose' : 'Pin a provider to override its model'}
+                        className="w-52 rounded-lg border border-input bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+                  {row.effective ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Using <span className="font-medium text-foreground">{row.effective.provider_name}</span>
+                      {' / '}{row.effective.model}
+                      <span className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                        {PURPOSE_SOURCE_LABELS[row.effective.source] || row.effective.source}
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-destructive">
+                      No active provider resolves for this purpose.
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          </>
         )}
       </div>
     </div>

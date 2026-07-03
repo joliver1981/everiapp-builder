@@ -409,7 +409,7 @@ class AIService:
                 runtime_enabled = bool(await get_setting(db, "runtime_probe_enabled"))
                 async for ev in self._self_heal_loop(
                     db, conversation, app_id, full_response, verify_level, max_iters,
-                    provider_config, runtime_enabled, live_code,
+                    provider_config, runtime_enabled, live_code, user_id=user_id,
                 ):
                     if ev["type"] == "_final_verify":
                         final_verify = ev["data"]
@@ -636,6 +636,7 @@ class AIService:
         provider_config: dict,
         runtime_enabled: bool = True,
         live_code: bool = False,
+        user_id: str | None = None,
     ):
         """Verify the just-applied files, and on red, ask the LLM to fix.
 
@@ -690,9 +691,42 @@ class AIService:
                 raw = fix_response.choices[0].message.content or ""
             except Exception as e:
                 logger.exception("self-heal LLM call failed at iteration %d", iteration)
+                try:
+                    from ..llm_usage.service import record_usage
+                    # commit=False: this session still holds the turn's pending
+                    # rows (user Message); the row rides the turn's transaction
+                    # and lands with the outer assistant-message commit.
+                    await record_usage(
+                        db, user_id=user_id or "(unknown)", app_id=app_id,
+                        provider_type=provider_type, model=model, purpose="self_heal",
+                        input_tokens=0, output_tokens=0,
+                        error=f"{type(e).__name__}: {e}",
+                        commit=False,
+                    )
+                except Exception:
+                    pass
                 result.summary = f"{result.summary} — fix call failed: {e}"
                 yield {"type": "_final_verify", "data": result}
                 return
+
+            # Cost meter: fix iterations burn real tokens — attribute them
+            # separately from the main turn (purpose="self_heal") so the cost
+            # dashboard can show how much healing costs per app. commit=False:
+            # committing here would flush the turn's pending rows early, and a
+            # failed commit would poison the shared session; the row rides the
+            # turn's transaction instead (next commit is a few lines below).
+            try:
+                from ..llm_usage.service import record_usage
+                _u = getattr(fix_response, "usage", None)
+                await record_usage(
+                    db, user_id=user_id or "(unknown)", app_id=app_id,
+                    provider_type=provider_type, model=model, purpose="self_heal",
+                    input_tokens=getattr(_u, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(_u, "completion_tokens", 0) or max(1, len(raw) // 4),
+                    commit=False,
+                )
+            except Exception:
+                pass
 
             fix_files, _fix_desc, _fix_wizard = parse_llm_response(raw)
             last_response = raw

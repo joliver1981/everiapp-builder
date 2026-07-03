@@ -177,11 +177,12 @@ async def run_analysis(
     if not files:
         return AnalysisResult(error="No analyzable source files found")
 
-    # Pick the configured generation provider (same one the chat builder uses).
+    # Own purpose so an admin can pin a cheaper model for analysis; unpinned it
+    # inherits the generation default (same provider the chat builder uses).
     if provider_id:
         provider_config = await ai_provider_service.get_provider_config(db, provider_id)
     else:
-        provider_config = await ai_provider_service.get_default_provider_config(db, purpose="generation")
+        provider_config = await ai_provider_service.get_default_provider_config(db, purpose="bug_analysis")
     if not provider_config:
         return AnalysisResult(error="No AI provider configured. Set one in Admin → AI Providers.")
 
@@ -214,9 +215,44 @@ async def run_analysis(
             stream=False,
         )
         raw = response.choices[0].message.content or ""
+
+        # Cost meter (best-effort). The analyzer runs as a background system
+        # task — bug reports can be anonymous — so spend is attributed to
+        # "(system)" rather than a user.
+        try:
+            from ..llm_usage.service import record_usage
+            usage = getattr(response, "usage", None)
+            await record_usage(
+                db, user_id="(system)", app_id=app_id,
+                provider_type=provider_type, model=model, purpose="bug_analysis",
+                input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) or max(1, len(raw) // 4),
+            )
+        except Exception:
+            # A failed commit leaves the session pending-rollback; restore it —
+            # the bug_reports service keeps using this session afterwards.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
         result = parse_analyzer_response(raw)
         result.llm_model = llm_model
         return result
     except Exception as e:
         logger.exception("Bug-report analyzer failed for app %s", app_id)
+        try:
+            from ..llm_usage.service import record_usage
+            await record_usage(
+                db, user_id="(system)", app_id=app_id,
+                provider_type=provider_config.get("provider_type") or "",
+                model=provider_config.get("model") or "",
+                purpose="bug_analysis", input_tokens=0, output_tokens=0,
+                error=f"{type(e).__name__}: {e}",
+            )
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
         return AnalysisResult(error=f"LLM call failed: {type(e).__name__}: {e}")

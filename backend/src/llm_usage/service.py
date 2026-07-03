@@ -81,7 +81,12 @@ async def record_usage(
     input_tokens: int,
     output_tokens: int,
     error: str | None = None,
+    commit: bool = True,
 ) -> LLMUsage:
+    """Add one usage row. commit=False leaves the row riding the caller's open
+    transaction — required inside long-lived flows (the generation turn keeps
+    uncommitted rows like the user Message in its session; committing here
+    would flush those early, and a failed commit would poison the session)."""
     total = (input_tokens or 0) + (output_tokens or 0)
     cost = estimate_cost_usd(provider_type, model, input_tokens, output_tokens)
     row = LLMUsage(
@@ -97,7 +102,8 @@ async def record_usage(
         error=error,
     )
     db.add(row)
-    await db.commit()
+    if commit:
+        await db.commit()
     return row
 
 

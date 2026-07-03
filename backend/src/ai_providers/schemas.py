@@ -43,3 +43,26 @@ class AIProviderTestResult(BaseModel):
     message: str
     model: str | None = None
     response_time_ms: int | None = None
+
+
+class PurposeEffective(BaseModel):
+    """What a purpose currently resolves to (never includes the api_key)."""
+    provider_id: str
+    provider_name: str
+    provider_type: str
+    model: str
+    source: str  # pinned | legacy_default | inherited_generation | first_active
+
+
+class PurposeDefaultResponse(BaseModel):
+    purpose: str
+    label: str
+    description: str
+    provider_id: str | None = None   # the stored pin, if any
+    model: str | None = None         # optional model override on the pin
+    effective: PurposeEffective | None = None
+
+
+class PurposeDefaultUpdate(BaseModel):
+    provider_id: str | None = None   # None clears the pin
+    model: str | None = None         # only meaningful together with provider_id

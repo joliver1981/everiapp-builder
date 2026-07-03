@@ -138,7 +138,9 @@ async def suggest_metadata(
     except Exception:
         pass
 
-    provider_config = await ai_provider_service.get_default_provider_config(db, purpose="generation")
+    # Own purpose (inherits the generation default when unpinned) — matches the
+    # purpose this call already records in llm_usage.
+    provider_config = await ai_provider_service.get_default_provider_config(db, purpose="marketplace_metadata")
     if not provider_config:
         raise MarketplaceError("No AI provider configured. Ask an admin to set one up.")
 

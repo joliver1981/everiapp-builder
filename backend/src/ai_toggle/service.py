@@ -17,6 +17,7 @@ class AIToggleService:
         db: AsyncSession,
         app_id: str,
         request: ToggleChatRequest,
+        user_id: str | None = None,
     ) -> ToggleChatResponse:
         """Process a chat message and return a response with optional actions."""
         # Build prompt with context
@@ -25,10 +26,9 @@ class AIToggleService:
             available_actions=request.context.availableActions,
         )
 
-        # Get provider config (use 'toggle' purpose first, fall back to 'generation')
+        # Purpose resolution falls back toggle-pin -> legacy toggle default ->
+        # generation default -> first active, so one call covers every config.
         provider_config = await ai_provider_service.get_default_provider_config(db, purpose="toggle")
-        if not provider_config:
-            provider_config = await ai_provider_service.get_default_provider_config(db, purpose="generation")
         if not provider_config:
             return ToggleChatResponse(
                 response="No AI provider configured. Please ask an admin to set one up.",
@@ -57,11 +57,52 @@ class AIToggleService:
 
             raw_content = response.choices[0].message.content or ""
 
+            # Cost meter (best-effort, same pattern as generation) — this call
+            # path used to be entirely invisible in llm_usage.
+            try:
+                from ..llm_usage.service import record_usage
+                usage = getattr(response, "usage", None)
+                await record_usage(
+                    db,
+                    user_id=user_id or "(unknown)",
+                    app_id=app_id,
+                    provider_type=provider_type,
+                    model=model,
+                    purpose="ai_toggle",
+                    input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(usage, "completion_tokens", 0) or max(1, len(raw_content) // 4),
+                )
+            except Exception:
+                # A failed commit leaves the session pending-rollback; restore
+                # it so the request can still finish.
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+
             # Parse JSON response
             return self._parse_response(raw_content)
 
         except Exception as e:
             logger.exception("AI Toggle chat error for app %s", app_id)
+            try:
+                from ..llm_usage.service import record_usage
+                await record_usage(
+                    db,
+                    user_id=user_id or "(unknown)",
+                    app_id=app_id,
+                    provider_type=provider_config.get("provider_type") or "",
+                    model=provider_config.get("model") or "",
+                    purpose="ai_toggle",
+                    input_tokens=0,
+                    output_tokens=0,
+                    error=f"{type(e).__name__}: {e}",
+                )
+            except Exception:
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
             return ToggleChatResponse(
                 response=f"Sorry, I encountered an error: {str(e)}",
             )
@@ -86,8 +127,11 @@ class AIToggleService:
                 if isinstance(a, dict) and "name" in a:
                     actions.append(ActionCommand(name=a["name"], params=a.get("params", {})))
             return ToggleChatResponse(response=response_text, actions=actions)
-        except (json.JSONDecodeError, KeyError):
-            # If parsing fails, treat the whole thing as text
+        except Exception:
+            # Any parse-shaped failure degrades to plain text: a JSON array
+            # (AttributeError on .get), a non-dict params / non-string name
+            # (pydantic ValidationError), etc. Raising here would make the
+            # caller record a second llm_usage row for the same call.
             return ToggleChatResponse(response=raw)
 
 

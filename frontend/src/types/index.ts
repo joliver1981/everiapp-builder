@@ -251,6 +251,22 @@ export interface AIProvider {
   created_at: string
 }
 
+// Per-purpose default provider pin (Admin → AI Providers → Purpose defaults).
+export interface AIPurposeDefault {
+  purpose: string
+  label: string
+  description: string
+  provider_id: string | null
+  model: string | null
+  effective: {
+    provider_id: string
+    provider_name: string
+    provider_type: string
+    model: string
+    source: 'pinned' | 'legacy_default' | 'inherited_generation' | 'first_active'
+  } | null
+}
+
 // --- Data platform: Connections + Datasets --------------------------------
 
 export type ConnectionKind = 'sql' | 'rest'

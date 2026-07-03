@@ -40,4 +40,4 @@ async def toggle_chat(
     if not app.ai_toggle_enabled:
         raise HTTPException(status_code=403, detail="AI Toggle is not enabled for this app")
 
-    return await ai_toggle_service.chat(db, app_id, body)
+    return await ai_toggle_service.chat(db, app_id, body, user_id=user.id)
