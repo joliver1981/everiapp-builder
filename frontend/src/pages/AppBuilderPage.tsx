@@ -1364,6 +1364,7 @@ export function AppBuilderPage() {
                 appId={appId}
                 variant="panel"
                 onClose={() => setRightPanel('none')}
+                onFixRequested={() => setActivePanel('chat')}
               />
             )}
             {rightPanel === 'versions' && (

@@ -57,17 +57,22 @@ def validate_manifest_entry(entry: dict) -> list[str]:
     return errors
 
 
-async def upsert_from_manifest(db: AsyncSession, app_id: str, entries: list[dict]) -> list[str]:
-    """Upsert declared decisions; returns the names written. Raises
-    DecisionError when any entry is invalid (callers treat like a bad file)."""
-    all_errors = []
+async def upsert_from_manifest(db: AsyncSession, app_id: str, entries: list[dict]) -> tuple[list[str], list[str]]:
+    """Upsert declared decisions PER ENTRY: valid entries register, invalid
+    ones are skipped and reported. Deliberately not all-or-nothing — one bad
+    entry used to block the whole manifest, so the app shipped calling
+    decisions that were never registered (registry drift → runtime 404s).
+    Returns (names_written, entry_errors)."""
+    written: list[str] = []
+    errors: list[str] = []
     for entry in entries:
-        all_errors.extend(validate_manifest_entry(entry))
-    if all_errors:
-        raise DecisionError("; ".join(all_errors))
-
-    written = []
-    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append("manifest entry is not an object")
+            continue
+        entry_errors = validate_manifest_entry(entry)
+        if entry_errors:
+            errors.extend(entry_errors)
+            continue
         row = (await db.execute(select(AppDecision).where(
             AppDecision.app_id == app_id, AppDecision.name == entry["name"],
         ))).scalar_one_or_none()
@@ -95,7 +100,7 @@ async def upsert_from_manifest(db: AsyncSession, app_id: str, entries: list[dict
         row.fallback_json = json.dumps(entry.get("fallback"))
         written.append(row.name)
     await db.commit()
-    return written
+    return written, errors
 
 
 async def purge_expired_cache(db: AsyncSession) -> int:

@@ -6,8 +6,9 @@
  * Metadata only — payload viewing arrives with the audited decrypt path.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, AlertCircle, Loader2, RefreshCw, Sparkles, X } from 'lucide-react'
+import { Activity, AlertCircle, Loader2, RefreshCw, Sparkles, Wrench, X } from 'lucide-react'
 import { apiClient } from '@/api/client'
+import { useChatStore } from '@/stores/chatStore'
 import { cn } from '@/lib/utils'
 
 interface SpanRow {
@@ -45,6 +46,9 @@ function detectIssues(spans: SpanRow[]): Issue[] {
     else byKey.set(key, { key, label, count: 1, severity })
   }
   for (const s of spans) {
+    // The platform's own AI (diagnosis, bug analysis) is traced too — don't
+    // report it as an app issue (a 60s diagnosis isn't a slow app).
+    if (s.purpose === 'copilot_diagnose' || s.purpose === 'bug_analysis') continue
     if (s.kind === 'ai.decision' && s.status === 'error') {
       bump(`fb:${s.name}`, `Decision “${s.name}” falling back`, 'warn')
     } else if (s.status === 'error') {
@@ -95,12 +99,15 @@ function narrate(s: SpanRow): string {
 const timeOf = (s: SpanRow) =>
   s.created_at ? new Date(s.created_at + (s.created_at.endsWith('Z') ? '' : 'Z')) : new Date(0)
 
-export function TraceInspectorModal({ appId, onClose, variant = 'modal' }: {
+export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRequested }: {
   appId: string
   onClose: () => void
   /** 'panel' renders as a full-height side panel (beside the Preview) instead
       of a centered modal — same content, different chrome. */
   variant?: 'modal' | 'panel'
+  /** Called after "Fix it" hands the fix brief to the builder chat — the host
+      page can switch the left panel to chat so the user watches it run. */
+  onFixRequested?: () => void
 }) {
   const [spans, setSpans] = useState<SpanRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -136,12 +143,47 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal' }: {
   const [diagnosing, setDiagnosing] = useState<string | null>(null)
   const [diagnosis, setDiagnosis] = useState<{
     issueKey: string
+    issueLabel: string
     diagnosis: string
     root_cause: string
     risk_level: string
     files_implicated: Array<{ path: string; action: string }>
   } | null>(null)
   const [diagError, setDiagError] = useState<string | null>(null)
+
+  // "Fix it" (copilot Co-fix level): the diagnosis becomes a fix brief sent
+  // through the normal builder chat — visible as a turn, so the user watches
+  // the fix, self-heal, and verification run on the existing rails.
+  const sendChatMessage = useChatStore((s) => s.sendMessage)
+  const isStreaming = useChatStore((s) => s.isStreaming)
+
+  const requestFix = () => {
+    if (!diagnosis || isStreaming) return
+    const episode = [...(spans || [])].slice(0, 30).reverse().map((s) =>
+      `- [${s.kind}] ${s.name || s.purpose} — ${s.status}` +
+      (s.error ? ` | ${s.error.slice(0, 200)}` : '') +
+      (s.latency_ms ? ` | ${s.latency_ms}ms` : ''),
+    ).join('\n')
+    const brief = [
+      `Fix this issue I hit while testing the app (found by the trace Inspector):`,
+      ``,
+      `ISSUE: ${diagnosis.issueLabel}`,
+      `AI DIAGNOSIS: ${diagnosis.diagnosis}`,
+      `ROOT CAUSE: ${diagnosis.root_cause}`,
+      diagnosis.files_implicated.length
+        ? `LIKELY FILES: ${diagnosis.files_implicated.map((f) => f.path).join(', ')}`
+        : '',
+      ``,
+      `Traced events (oldest first):`,
+      episode,
+      ``,
+      `Make the smallest correct fix. If the root cause is a decision missing from`,
+      `the registry, re-emit a complete, valid decisions.json.`,
+    ].filter((l) => l !== '').join('\n')
+    sendChatMessage(appId, brief)
+    setDiagnosis(null)
+    onFixRequested?.()
+  }
 
   const explain = async (issue: Issue) => {
     if (diagnosing) return
@@ -156,7 +198,7 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal' }: {
         `/copilot/${appId}/diagnose`,
         { issue_label: issue.label, trace_id: spans?.[0]?.trace_id ?? null, spans: windowSpans },
       )
-      setDiagnosis({ ...data, issueKey: issue.key })
+      setDiagnosis({ ...data, issueKey: issue.key, issueLabel: issue.label })
     } catch (e: any) {
       setDiagError(e.message)
     } finally {
@@ -258,8 +300,19 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal' }: {
                   )}>
                     {diagnosis.risk_level} risk fix
                   </span>
+                  <button
+                    onClick={requestFix}
+                    disabled={isStreaming}
+                    className="ml-auto flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    title={isStreaming
+                      ? 'A build is already running — wait for it to finish'
+                      : 'Send this diagnosis to the builder chat as a fix request (you watch it run)'}
+                  >
+                    <Wrench size={11} />
+                    Fix it
+                  </button>
                   <button onClick={() => setDiagnosis(null)}
-                          className="ml-auto text-muted-foreground hover:text-foreground">
+                          className="text-muted-foreground hover:text-foreground">
                     <X size={12} />
                   </button>
                 </div>

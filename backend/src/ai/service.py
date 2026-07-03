@@ -853,9 +853,12 @@ class AIService:
                 from ..database import async_session
                 from ..decisions.service import upsert_from_manifest
                 async with async_session() as mdb:
-                    written = await upsert_from_manifest(mdb, app_id, entries)
+                    written, entry_errors = await upsert_from_manifest(mdb, app_id, entries)
                 logger.info("decisions.json upserted %d decisions for %s: %s",
                             len(written), app_id, ", ".join(written))
+                if entry_errors:
+                    logger.warning("decisions.json for %s rejected %d entries: %s",
+                                   app_id, len(entry_errors), "; ".join(entry_errors))
             except Exception as e:
                 logger.warning("decisions.json manifest rejected for %s: %s", app_id, e)
 

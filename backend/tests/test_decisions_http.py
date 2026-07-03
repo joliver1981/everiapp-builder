@@ -168,6 +168,15 @@ def test_invalid_manifest_rejected_without_breaking_save(client, admin, provider
     assert client.get(f"/api/decisions/{app_id}", headers=admin).json() == []
 
 
+def test_manifest_partial_validity_registers_good_entries(client, admin, provider):
+    """One bad entry must not block the rest — all-or-nothing rejection used to
+    cause registry drift (app calls a decision that was never registered)."""
+    manifest = [MANIFEST[0], {"name": "broken_no_fallback", "prompt": "p"}]
+    app_id = _decision_app(client, admin, "Partial Manifest App", manifest=manifest)
+    names = [d["name"] for d in client.get(f"/api/decisions/{app_id}", headers=admin).json()]
+    assert names == ["classify_question"]
+
+
 def test_invoke_llm_path_with_spans_and_usage(client, admin, provider, fake_llm):
     app_id = _decision_app(client, admin, "Invoke App")
     r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
