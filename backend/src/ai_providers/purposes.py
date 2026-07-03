@@ -40,6 +40,11 @@ PURPOSES: dict[str, dict] = {
                        "Pin a cheap/fast model here.",
         "legacy_field": None,
     },
+    "copilot_diagnose": {
+        "label": "Copilot diagnosis",
+        "description": "On-demand 'Explain this issue' analysis in the trace Inspector.",
+        "legacy_field": None,
+    },
     "bug_analysis": {
         "label": "Bug-report analyzer",
         "description": "Analyzes submitted bug reports and drafts fix suggestions.",

@@ -6,7 +6,7 @@
  * Metadata only — payload viewing arrives with the audited decrypt path.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react'
+import { Activity, AlertCircle, Loader2, RefreshCw, Sparkles, X } from 'lucide-react'
 import { apiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
 
@@ -126,6 +126,38 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
 
   const issues = spans ? detectIssues(spans) : []
 
+  // "Explain" (copilot Suggest level): one diagnosis at a time.
+  const [diagnosing, setDiagnosing] = useState<string | null>(null)
+  const [diagnosis, setDiagnosis] = useState<{
+    issueKey: string
+    diagnosis: string
+    root_cause: string
+    risk_level: string
+    files_implicated: Array<{ path: string; action: string }>
+  } | null>(null)
+  const [diagError, setDiagError] = useState<string | null>(null)
+
+  const explain = async (issue: Issue) => {
+    if (diagnosing) return
+    setDiagnosing(issue.key)
+    setDiagError(null)
+    try {
+      const windowSpans = (spans || []).slice(0, 50).map((s) => ({
+        kind: s.kind, name: s.name || s.purpose, status: s.status,
+        error: s.error || undefined, latency_ms: s.latency_ms, ts: s.created_at,
+      }))
+      const data = await apiClient.post<Omit<NonNullable<typeof diagnosis>, 'issueKey'>>(
+        `/copilot/${appId}/diagnose`,
+        { issue_label: issue.label, trace_id: spans?.[0]?.trace_id ?? null, spans: windowSpans },
+      )
+      setDiagnosis({ ...data, issueKey: issue.key })
+    } catch (e: any) {
+      setDiagError(e.message)
+    } finally {
+      setDiagnosing(null)
+    }
+  }
+
   // Group into sessions by trace_id, newest session first; chronological within.
   const sessions: Array<{ traceId: string | null; rows: SpanRow[] }> = []
   if (spans) {
@@ -188,21 +220,64 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
         </div>
 
         {issues.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 border-b border-border px-4 py-2">
-            {issues.slice(0, 6).map((i) => (
-              <span
-                key={i.key}
-                className={cn(
-                  'rounded-full px-2.5 py-0.5 text-[11px]',
-                  i.severity === 'error'
-                    ? 'bg-destructive/10 text-destructive'
-                    : 'bg-warning/10 text-warning-foreground text-amber-600',
+          <div className="border-b border-border px-4 py-2">
+            <div className="flex flex-wrap gap-1.5">
+              {issues.slice(0, 6).map((i) => (
+                <button
+                  key={i.key}
+                  onClick={() => explain(i)}
+                  disabled={!!diagnosing}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] transition-colors disabled:opacity-60',
+                    i.severity === 'error'
+                      ? 'bg-destructive/10 text-destructive hover:bg-destructive/20'
+                      : 'bg-warning/10 text-amber-600 hover:bg-warning/20',
+                  )}
+                  title="Click to have AI diagnose this from the trace + source"
+                >
+                  {diagnosing === i.key
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : <Sparkles size={11} />}
+                  {i.label}{i.count > 1 ? ` (${i.count}×)` : ''}
+                </button>
+              ))}
+            </div>
+            {diagError && (
+              <p className="mt-1.5 text-[11px] text-destructive">Diagnosis failed: {diagError}</p>
+            )}
+            {diagnosis && (
+              <div className="mt-2 rounded-lg border border-border bg-muted/30 p-3 text-xs">
+                <div className="mb-1 flex items-center gap-2">
+                  <Sparkles size={12} className="text-primary" />
+                  <span className="font-medium">AI diagnosis</span>
+                  <span className={cn(
+                    'rounded px-1.5 py-0.5 text-[10px]',
+                    diagnosis.risk_level === 'low' ? 'bg-success/10 text-success' : 'bg-warning/10 text-amber-600',
+                  )}>
+                    {diagnosis.risk_level} risk fix
+                  </span>
+                  <button onClick={() => setDiagnosis(null)}
+                          className="ml-auto text-muted-foreground hover:text-foreground">
+                    <X size={12} />
+                  </button>
+                </div>
+                <p className="leading-5">{diagnosis.diagnosis}</p>
+                {diagnosis.root_cause && (
+                  <p className="mt-1 leading-5 text-muted-foreground">
+                    <span className="font-medium text-foreground">Root cause:</span> {diagnosis.root_cause}
+                  </p>
                 )}
-                title="Detected by rules over the trace — no AI cost"
-              >
-                {i.label}{i.count > 1 ? ` (${i.count}×)` : ''}
-              </span>
-            ))}
+                {diagnosis.files_implicated.length > 0 && (
+                  <p className="mt-1 text-muted-foreground">
+                    Fix would touch:{' '}
+                    {diagnosis.files_implicated.map((f) => (
+                      <code key={f.path} className="mr-1.5 rounded bg-muted px-1 py-0.5 text-[10px]">{f.path}</code>
+                    ))}
+                    — ask for it in the builder chat.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 

@@ -167,6 +167,11 @@ async def run_analysis(
     captured_context: dict,
     extra_note: str = "",
     provider_id: str | None = None,
+    # The copilot reuses this pipeline for on-demand diagnosis: it meters
+    # under its own purpose, attributed to the requesting developer instead
+    # of the background "(system)" identity.
+    usage_purpose: str = "bug_analysis",
+    usage_user: str = "(system)",
 ) -> AnalysisResult:
     """Top-level entry — gathers source, calls the LLM, parses, returns."""
     source_dir = _resolve_source_dir(app_id, version)
@@ -182,7 +187,7 @@ async def run_analysis(
     if provider_id:
         provider_config = await ai_provider_service.get_provider_config(db, provider_id)
     else:
-        provider_config = await ai_provider_service.get_default_provider_config(db, purpose="bug_analysis")
+        provider_config = await ai_provider_service.get_default_provider_config(db, purpose=usage_purpose)
     if not provider_config:
         return AnalysisResult(error="No AI provider configured. Set one in Admin → AI Providers.")
 
@@ -213,8 +218,8 @@ async def run_analysis(
             max_tokens=8192,
             temperature=0.2,  # deterministic; we want surgical fixes
             stream=False,
-            aihub_span={"app_id": app_id, "user_id": "(system)",
-                        "purpose": "bug_analysis",
+            aihub_span={"app_id": app_id, "user_id": usage_user,
+                        "purpose": usage_purpose,
                         "provider_type": provider_type, "model": model},
         )
         raw = response.choices[0].message.content or ""
@@ -226,8 +231,8 @@ async def run_analysis(
             from ..llm_usage.service import record_usage
             usage = getattr(response, "usage", None)
             await record_usage(
-                db, user_id="(system)", app_id=app_id,
-                provider_type=provider_type, model=model, purpose="bug_analysis",
+                db, user_id=usage_user, app_id=app_id,
+                provider_type=provider_type, model=model, purpose=usage_purpose,
                 input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                 output_tokens=getattr(usage, "completion_tokens", 0) or max(1, len(raw) // 4),
             )
@@ -247,10 +252,10 @@ async def run_analysis(
         try:
             from ..llm_usage.service import record_usage
             await record_usage(
-                db, user_id="(system)", app_id=app_id,
+                db, user_id=usage_user, app_id=app_id,
                 provider_type=provider_config.get("provider_type") or "",
                 model=provider_config.get("model") or "",
-                purpose="bug_analysis", input_tokens=0, output_tokens=0,
+                purpose=usage_purpose, input_tokens=0, output_tokens=0,
                 error=f"{type(e).__name__}: {e}",
             )
         except Exception:

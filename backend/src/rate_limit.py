@@ -61,3 +61,6 @@ dataset_limiter = RateLimiter(rate_per_sec=2.0, capacity=120)
 # Decisions are real LLM completions (max_tokens=1024): 60/min sustained with
 # a small burst, keyed per (user, app).
 decision_limiter = RateLimiter(rate_per_sec=1.0, capacity=30)
+# Copilot diagnoses are heavyweight (source files + big model): a handful per
+# minute per user is plenty for interactive use.
+copilot_limiter = RateLimiter(rate_per_sec=0.1, capacity=5)
