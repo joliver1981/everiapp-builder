@@ -33,6 +33,7 @@ import {
   FileDiff,
   BarChart3,
   Radio,
+  Activity,
   LocateFixed,
   MessageSquarePlus,
 } from 'lucide-react'
@@ -59,7 +60,7 @@ import { apiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
 
 type Panel = 'chat' | 'code' | 'preview'
-type RightPanel = 'none' | 'versions' | 'settings' | 'permissions' | 'wizard' | 'deployments' | 'data' | 'analytics' | 'live'
+type RightPanel = 'none' | 'versions' | 'settings' | 'permissions' | 'wizard' | 'deployments' | 'data' | 'analytics' | 'live' | 'inspector'
 
 // Shape of /api/apps/{id}/runtime/status responses — includes streaming phase
 // fields so the UI can show "Installing dependencies (15s)..." instead of a
@@ -944,6 +945,22 @@ export function AppBuilderPage() {
             Live
           </button>
 
+          {/* Trace Inspector — the app's runtime story (clicks, data calls, AI
+              decisions, errors) beside the Preview while you test it. */}
+          <button
+            onClick={() => setRightPanel(rightPanel === 'inspector' ? 'none' : 'inspector')}
+            className={cn(
+              'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+              rightPanel === 'inspector'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+            title="Inspector — watch what the running app does while you test (plain-English trace + AI diagnosis)"
+          >
+            <Activity size={14} />
+            Inspector
+          </button>
+
           {/* Auto-jump toggle — when on, code the AI references opens + highlights automatically */}
           <button
             onClick={() => setAutoJumpEnabled(!autoJumpEnabled)}
@@ -1342,6 +1359,13 @@ export function AppBuilderPage() {
               )}
             />
             {rightPanel === 'live' && <LiveCodePanel />}
+            {rightPanel === 'inspector' && (
+              <TraceInspectorModal
+                appId={appId}
+                variant="panel"
+                onClose={() => setRightPanel('none')}
+              />
+            )}
             {rightPanel === 'versions' && (
               <VersionsPanel
                 appId={currentApp.id}

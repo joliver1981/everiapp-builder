@@ -95,7 +95,13 @@ function narrate(s: SpanRow): string {
 const timeOf = (s: SpanRow) =>
   s.created_at ? new Date(s.created_at + (s.created_at.endsWith('Z') ? '' : 'Z')) : new Date(0)
 
-export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose: () => void }) {
+export function TraceInspectorModal({ appId, onClose, variant = 'modal' }: {
+  appId: string
+  onClose: () => void
+  /** 'panel' renders as a full-height side panel (beside the Preview) instead
+      of a centered modal — same content, different chrome. */
+  variant?: 'modal' | 'panel'
+}) {
   const [spans, setSpans] = useState<SpanRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<'story' | 'timeline'>('story')
@@ -175,12 +181,8 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
       timeOf(b.rows[b.rows.length - 1]).getTime() - timeOf(a.rows[a.rows.length - 1]).getTime())
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div
-        className="flex max-h-[85vh] w-[720px] flex-col rounded-xl border border-border bg-card shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+  const content = (
+      <>
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <div className="flex items-center gap-2">
             <Activity size={16} className="text-primary" />
@@ -336,6 +338,19 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
             </div>
           ))}
         </div>
+      </>
+  )
+
+  if (variant === 'panel') {
+    return <div className="flex h-full flex-col overflow-hidden bg-card">{content}</div>
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="flex max-h-[85vh] w-[720px] flex-col rounded-xl border border-border bg-card shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {content}
       </div>
     </div>
   )
