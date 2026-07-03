@@ -79,6 +79,7 @@ from .backups.router import admin_router as backups_admin_router
 from .teams.router import admin_router as teams_admin_router
 from .ai_prompts.router import admin_router as ai_prompts_admin_router
 from .generation_trace.router import router as generation_trace_router
+from .tracing.router import router as tracing_router
 from .embedding.router import router as embedding_router
 from .auth.saml.router import router as saml_router
 from .auth.oidc.router import router as oidc_router
@@ -127,10 +128,14 @@ async def lifespan(app: FastAPI):
     from .audit_rotation import audit_rotation_loop
     from .siem.forwarder import siem_forwarder_loop
     from .backups.service import backup_loop
+    from .tracing.service import retention_loop as trace_retention_loop
+    from .tracing.writer import span_writer
     health_task = asyncio.create_task(deployments_health_loop())
     audit_task = asyncio.create_task(audit_rotation_loop())
     siem_task = asyncio.create_task(siem_forwarder_loop())
     backup_task = asyncio.create_task(backup_loop())
+    span_writer.start()
+    trace_retention_task = asyncio.create_task(trace_retention_loop())
 
     logger.info("AIHub Platform started (debug=%s)", settings.debug)
     try:
@@ -140,6 +145,9 @@ async def lifespan(app: FastAPI):
         audit_task.cancel()
         siem_task.cancel()
         backup_task.cancel()
+        trace_retention_task.cancel()
+        # Flush queued spans so a clean shutdown doesn't lose them.
+        await span_writer.stop()
         # Shutdown: stop all running app processes
         from .runtime.manager import runtime_manager
         from .runtime.proxy import close_client
@@ -180,6 +188,7 @@ app.include_router(connections_router, prefix="/api/admin/connections", tags=["c
 app.include_router(license_router, prefix="/api/admin/license", tags=["license"])
 app.include_router(ai_prompts_admin_router, prefix="/api/admin/ai", tags=["ai-prompts"])
 app.include_router(generation_trace_router, prefix="/api/apps", tags=["generation-trace"])
+app.include_router(tracing_router, prefix="/api/apps", tags=["tracing"])
 app.include_router(app_db_router, prefix="/api/apps", tags=["app-db"])
 app.include_router(security_scan_router, prefix="/api/apps", tags=["security-scan"])
 app.include_router(dependency_scan_router, prefix="/api/apps", tags=["dependency-scan"])

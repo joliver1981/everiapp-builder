@@ -68,6 +68,9 @@ _MISSING_COLUMN_MIGRATIONS = [
     ("apps", "last_published_version",        "VARCHAR(20) DEFAULT ''"),
     # Last-published marketplace listing metadata (JSON: short_desc/category/tags/license)
     ("apps", "marketplace_listing",           "TEXT"),
+    # Trace spine: join llm_usage rows to ai_spans / a request's trace
+    ("llm_usage", "trace_id",                 "VARCHAR(64)"),
+    ("llm_usage", "span_id",                  "VARCHAR(36)"),
 ]
 
 
@@ -117,6 +120,7 @@ async def init_db():
     from .analytics.models import AppEvent  # noqa: F401
     from .teams.models import Team, TeamMembership  # noqa: F401
     from .generation_trace.models import GenerationTrace  # noqa: F401
+    from .tracing.models import AISpan  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

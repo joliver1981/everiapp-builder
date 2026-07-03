@@ -213,6 +213,9 @@ async def run_analysis(
             max_tokens=8192,
             temperature=0.2,  # deterministic; we want surgical fixes
             stream=False,
+            aihub_span={"app_id": app_id, "user_id": "(system)",
+                        "purpose": "bug_analysis",
+                        "provider_type": provider_type, "model": model},
         )
         raw = response.choices[0].message.content or ""
 

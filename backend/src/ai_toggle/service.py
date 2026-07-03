@@ -53,6 +53,9 @@ class AIToggleService:
                 base_url=provider_config.get("base_url"),
                 max_tokens=2048,
                 temperature=0.5,
+                aihub_span={"app_id": app_id, "user_id": user_id,
+                            "purpose": "ai_toggle",
+                            "provider_type": provider_type, "model": model},
             )
 
             raw_content = response.choices[0].message.content or ""

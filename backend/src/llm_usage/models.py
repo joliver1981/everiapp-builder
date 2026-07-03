@@ -28,6 +28,12 @@ class LLMUsage(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Trace spine: which request/session and which ai_spans row this call was.
+    # Nullable — calls outside a trace context (WS generation, CLI) leave them
+    # empty. Deliberately a join, not a merge: usage is the long-retention
+    # billing ledger; spans are short-retention debug data.
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    span_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc), index=True
     )

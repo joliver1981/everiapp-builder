@@ -61,6 +61,12 @@ DEFAULTS: dict[str, Any] = {
     # marketplace's Developer page, and never shipped with the product.
     "marketplace_url": os.environ.get("AIHUB_MARKETPLACE_URL", "https://aihub-marketplace.vercel.app"),
     "marketplace_api_key": "",     # write-only secret, like smtp_password
+    # App tracing (ai_spans). Capture level applies at span WRITE time:
+    #   full          — metadata + Fernet-encrypted prompt/response payloads
+    #   metadata_only — tokens/cost/latency/status, no payloads
+    #   off           — no spans at all
+    "trace_capture_level": "full",
+    "trace_retention_days": 14,    # 0 = keep forever
 }
 
 # Keys whose values are secrets — scrubbed from the admin GET response and

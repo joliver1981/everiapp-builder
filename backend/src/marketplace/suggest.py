@@ -176,6 +176,9 @@ async def suggest_metadata(
         base_url=provider_config.get("base_url"),
         max_tokens=2_048,
         temperature=0.4,
+        aihub_span={"app_id": app_id, "user_id": user.id,
+                    "purpose": "marketplace_metadata",
+                    "provider_type": provider_type, "model": model},
     )
     raw = response.choices[0].message.content or ""
 

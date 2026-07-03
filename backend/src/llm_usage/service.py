@@ -89,6 +89,11 @@ async def record_usage(
     would flush those early, and a failed commit would poison the session)."""
     total = (input_tokens or 0) + (output_tokens or 0)
     cost = estimate_cost_usd(provider_type, model, input_tokens, output_tokens)
+    # Trace spine: stamp the request's trace id, and consume (clear) the span
+    # id the LLM gateway just recorded so this row joins to exactly that call.
+    from ..tracing.context import current_trace_id, last_span_id
+    span_id = last_span_id.get()
+    last_span_id.set(None)
     row = LLMUsage(
         user_id=user_id,
         app_id=app_id,
@@ -100,6 +105,8 @@ async def record_usage(
         total_tokens=total,
         cost_usd=cost,
         error=error,
+        trace_id=current_trace_id.get(),
+        span_id=span_id,
     )
     db.add(row)
     if commit:
