@@ -83,4 +83,12 @@ async def retention_loop() -> None:
                 logger.info("trace retention sweep deleted %d spans", deleted)
         except Exception:
             logger.exception("trace retention sweep failed (non-fatal)")
+        # Shared janitor duty: expired decision-cache rows age out here too
+        # (decisions never invoked again would otherwise pin rows forever).
+        try:
+            from ..decisions.service import purge_expired_cache
+            async with async_session() as db:
+                await purge_expired_cache(db)
+        except Exception:
+            logger.exception("decision cache purge failed (non-fatal)")
         await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)

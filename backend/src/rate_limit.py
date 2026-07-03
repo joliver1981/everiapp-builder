@@ -58,3 +58,6 @@ class RateLimiter:
 chat_limiter = RateLimiter(rate_per_sec=0.5, capacity=30)
 app_db_limiter = RateLimiter(rate_per_sec=2.0, capacity=120)
 dataset_limiter = RateLimiter(rate_per_sec=2.0, capacity=120)
+# Decisions are real LLM completions (max_tokens=1024): 60/min sustained with
+# a small burst, keyed per (user, app).
+decision_limiter = RateLimiter(rate_per_sec=1.0, capacity=30)

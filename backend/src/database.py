@@ -121,6 +121,7 @@ async def init_db():
     from .teams.models import Team, TeamMembership  # noqa: F401
     from .generation_trace.models import GenerationTrace  # noqa: F401
     from .tracing.models import AISpan  # noqa: F401
+    from .decisions.models import AppDecision, DecisionCache  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

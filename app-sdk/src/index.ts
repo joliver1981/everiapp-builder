@@ -30,6 +30,13 @@ export {
   type AppQueryResult,
   type AppMutationResult,
 } from './useAppDB'
+export {
+  aiDecide,
+  useDecision,
+  type DecisionResult,
+  type AiDecideOptions,
+  type UseDecisionState,
+} from './aiDecide'
 export { reportBug, type ReportBugOptions, type ReportBugResult } from './reportBug'
 // Importing installs the fetch patch that stamps X-AIHub-Trace-Id on
 // platform-bound requests (one trace id per app session) and emits client

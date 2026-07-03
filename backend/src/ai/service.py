@@ -835,5 +835,29 @@ class AIService:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(f.content, encoding='utf-8')
 
+        # decisions.json manifest → upsert the app's decision registry. Own
+        # session (this method has none) and best-effort: a malformed manifest
+        # must never break the generation turn — it logs and the file stays on
+        # disk for the next turn to fix.
+        # Canonical location is top-level, but tolerate src/decisions.json —
+        # models sometimes follow the src/ allowlist habit.
+        manifest_file = next((f for f in files
+                              if f.path in ("decisions.json", "src/decisions.json")
+                              and f.action != "delete"), None)
+        if manifest_file is not None:
+            try:
+                import json as _json
+                entries = _json.loads(manifest_file.content)
+                if not isinstance(entries, list):
+                    raise ValueError("decisions.json must be a JSON array")
+                from ..database import async_session
+                from ..decisions.service import upsert_from_manifest
+                async with async_session() as mdb:
+                    written = await upsert_from_manifest(mdb, app_id, entries)
+                logger.info("decisions.json upserted %d decisions for %s: %s",
+                            len(written), app_id, ", ".join(written))
+            except Exception as e:
+                logger.warning("decisions.json manifest rejected for %s: %s", app_id, e)
+
 
 ai_service = AIService()

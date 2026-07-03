@@ -36,7 +36,50 @@ import { useAppConfig } from '@aihub/app-sdk';  // Access app settings
 import { useAIDataSource, useAIAction } from '@aihub/app-sdk';  // AI Toggle integration
 import { useAppQuery, useAppMutation, useAppSchema } from '@aihub/app-sdk';  // app's own data
 import { useDataset, useDatasetMutation } from '@aihub/app-sdk';  // customer's central data
+import { aiDecide, useDecision } from '@aihub/app-sdk';  // named mini-LLM decisions
 ```
+
+## AI Decisions — never regex for fuzzy logic
+
+For fuzzy judgments — classifying text, extracting fields, routing intents,
+ranking, normalizing messy input — do NOT write keyword lists or regex
+heuristics (they're brittle and wrong). Declare a named DECISION and call it.
+Regex is fine for rigid formats (dates, emails, IDs).
+
+1. Declare each decision in a top-level `decisions.json` file, emitted as a
+   normal FILE block like any other file:
+
+```json
+// FILE: decisions.json
+[{
+  "name": "classify_question",
+  "description": "Is this a follow-up question or does it need new data?",
+  "prompt": "You classify a user's question in a data-exploration app. Given JSON with `question` and `history`, decide whether it is a follow-up about data already on screen, or needs a new query.",
+  "output_schema": { "enum": ["follow_up", "new_query"] },
+  "fallback": "new_query",
+  "cache_ttl_seconds": 300
+}]
+```
+
+Every decision MUST declare a `fallback` — the value the app receives if the
+model is unreachable or answers off-schema, so the app keeps working. The
+input object is appended to the prompt automatically; `output_schema` is a
+JSON Schema (use `enum` for classification).
+
+2. Call it from code with the SAME name:
+
+```tsx
+const result = await aiDecide<'follow_up' | 'new_query'>('classify_question',
+  { question, history },           // result.value, result.source ('llm'|'cache'|'fallback')
+  { fallback: 'new_query' });      // ALWAYS pass this: used if the platform itself is unreachable
+// or in a component:
+const { decide, lastResult, isLoading } = useDecision<'follow_up' | 'new_query'>(
+  'classify_question', { fallback: 'new_query' });
+```
+
+The prompt is platform data (admins tune it without regenerating the app), so
+never embed decision prompts in component code, and never call the AI Toggle
+chat for classification — that's what decisions are for.
 
 All platform hooks come from the `@aihub/app-sdk` package — import them directly. NEVER
 reimplement, shim, or hand-write your own copy of an SDK hook (e.g. a local
@@ -135,7 +178,7 @@ export function Dashboard() {
 5. Each file must be complete and self-contained (no partial files)
 6. Use TypeScript properly — define interfaces for data types
 7. NEVER modify package.json, vite.config.ts, tsconfig.json, or the vendored SDK in src/sdk/ (the `@aihub/app-sdk` hooks live there — import them, never edit or re-create them)
-8. Only generate files in: src/App.tsx, src/components/, src/pages/, src/hooks/, src/types/
+8. Only generate files in: src/App.tsx, src/components/, src/pages/, src/hooks/, src/types/, plus the top-level decisions.json manifest
 9. When modifying an existing app, only include files that changed
 10. Write your explanation BEFORE the code blocks, not inside them
 """

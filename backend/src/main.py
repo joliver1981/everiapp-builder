@@ -80,6 +80,7 @@ from .teams.router import admin_router as teams_admin_router
 from .ai_prompts.router import admin_router as ai_prompts_admin_router
 from .generation_trace.router import router as generation_trace_router
 from .tracing.router import router as tracing_router
+from .decisions.router import router as decisions_router
 from .embedding.router import router as embedding_router
 from .auth.saml.router import router as saml_router
 from .auth.oidc.router import router as oidc_router
@@ -189,6 +190,7 @@ app.include_router(license_router, prefix="/api/admin/license", tags=["license"]
 app.include_router(ai_prompts_admin_router, prefix="/api/admin/ai", tags=["ai-prompts"])
 app.include_router(generation_trace_router, prefix="/api/apps", tags=["generation-trace"])
 app.include_router(tracing_router, prefix="/api/apps", tags=["tracing"])
+app.include_router(decisions_router, prefix="/api/decisions", tags=["decisions"])
 app.include_router(app_db_router, prefix="/api/apps", tags=["app-db"])
 app.include_router(security_scan_router, prefix="/api/apps", tags=["security-scan"])
 app.include_router(dependency_scan_router, prefix="/api/apps", tags=["dependency-scan"])

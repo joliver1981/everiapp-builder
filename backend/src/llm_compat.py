@@ -69,10 +69,18 @@ async def acompletion(**kwargs):
     if span_meta is None or kwargs.get("stream"):
         return await _acompletion_raw(kwargs)
 
+    import asyncio
     import time
     t0 = time.monotonic()
     try:
         response = await _acompletion_raw(kwargs)
+    except asyncio.CancelledError:
+        # A caller-imposed timeout (asyncio.wait_for) cancels us mid-flight;
+        # CancelledError is a BaseException, so without this clause the child
+        # ai.call span would silently vanish for the most common failure mode.
+        _emit_span(span_meta, kwargs, latency_ms=int((time.monotonic() - t0) * 1000),
+                   status="error", error="cancelled (caller timeout)")
+        raise
     except Exception as e:
         _emit_span(span_meta, kwargs, latency_ms=int((time.monotonic() - t0) * 1000),
                    status="error", error=f"{type(e).__name__}: {e}")

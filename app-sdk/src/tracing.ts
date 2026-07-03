@@ -137,10 +137,15 @@ function flushSpans(): void {
 
 // ---------------------------------------------------- URL classification
 
-function classify(url: string): { kind: ClientSpan['kind']; name: string } | null {
+function classify(url: string): { kind: ClientSpan['kind']; name: string; errorsOnly?: boolean } | null {
   const path = url.startsWith('/') ? url : url.slice(AIHUB_BASE.length)
-  // The ingestion endpoint itself and bug-report posts are never traced.
+  // Never client-traced: the ingestion endpoint itself and bug-report posts.
   if (/\/api\/apps\/[^/]+\/spans$/.test(path) || path.startsWith('/api/bug-reports/')) return null
+  // Decision invokes: the server emits a richer ai.decision span on success,
+  // but a 404/401/network failure never reaches the server's tracer — record
+  // ONLY failures client-side so those aren't a blind spot.
+  const dm = path.match(/^\/api\/decisions\/[^/]+\/([^/]+)\/invoke$/)
+  if (dm) return { kind: 'http.call', name: `decision:${dm[1]}`, errorsOnly: true }
   let m = path.match(/^\/api\/apps\/[^/]+\/datasets\/([^/]+)\/(execute|mutate)$/)
   if (m) return { kind: 'dataset.query', name: m[1] }
   m = path.match(/^\/api\/apps\/[^/]+\/db\/([^?]+)/)
@@ -240,12 +245,14 @@ export function installTracing(): void {
     const detail = bodySnippet(init)
     return base(input as any, init).then(
       (resp) => {
-        emitSpan({
-          kind: cls.kind, name: cls.name,
-          status: resp.ok ? 'ok' : 'error',
-          error: resp.ok ? undefined : `HTTP ${resp.status}`,
-          latency_ms: Date.now() - t0, detail,
-        })
+        if (!(cls.errorsOnly && resp.ok)) {
+          emitSpan({
+            kind: cls.kind, name: cls.name,
+            status: resp.ok ? 'ok' : 'error',
+            error: resp.ok ? undefined : `HTTP ${resp.status}`,
+            latency_ms: Date.now() - t0, detail,
+          })
+        }
         return resp
       },
       (err) => {

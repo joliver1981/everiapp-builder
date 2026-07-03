@@ -34,6 +34,12 @@ PURPOSES: dict[str, dict] = {
         "description": "The AI Toggle chat inside running apps.",
         "legacy_field": "is_default_toggle",
     },
+    "decision": {
+        "label": "App decisions (aiDecide)",
+        "description": "Mini-LLM decision calls made by running apps (classify, extract, route). "
+                       "Pin a cheap/fast model here.",
+        "legacy_field": None,
+    },
     "bug_analysis": {
         "label": "Bug-report analyzer",
         "description": "Analyzes submitted bug reports and drafts fix suggestions.",

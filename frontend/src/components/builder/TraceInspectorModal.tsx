@@ -46,6 +46,10 @@ function narrate(s: SpanRow): string {
       return failed
         ? `The app's local database call (${name}) failed: ${s.error || ''}`
         : `The app used its local database (${name})${ms}`
+    case 'ai.decision':
+      return failed
+        ? `The AI decision “${name}” used its fallback: ${s.error || 'unknown reason'}`
+        : `The app asked AI to decide “${name}”${ms}`
     case 'ai.call':
       return failed
         ? `The AI call (${s.purpose || name}) failed: ${s.error || ''}`
