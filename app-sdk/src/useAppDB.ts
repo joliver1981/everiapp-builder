@@ -103,10 +103,13 @@ function _markSchemaSettled(): void {
 }
 
 async function _waitForSchema(): Promise<void> {
+  // Let a sibling/parent useAppSchema effect register first. Effects flush in
+  // the same task; yielding a macrotask guarantees registration has happened.
   if (!_schemaRegistered) {
     await new Promise<void>((r) => setTimeout(() => r(), 0))
   }
   if (_schemaRegistered && _schemaSettle) {
+    // Wait for the migration to finish, but never hang forever.
     await Promise.race([_schemaSettle, new Promise<void>((r) => setTimeout(() => r(), 8000))])
   }
 }

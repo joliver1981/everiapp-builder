@@ -36,6 +36,10 @@ class App(Base):
     # Publisher-authored setup instructions (markdown) — shown on the marketplace
     # listing and after install (e.g. "ask IT for a read-only ERP account").
     setup_instructions: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Last-published marketplace LISTING metadata (short_description, category,
+    # tags, license) — prefills the publish dialog so listing fields stay
+    # consistent across publishes instead of resetting each time.
+    marketplace_listing: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

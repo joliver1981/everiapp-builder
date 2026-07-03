@@ -60,16 +60,17 @@ class Check:
                 env=env,
                 capture_output=True,
                 text=True,
-                # 720s budget: the backend suite spans 5 feature waves plus the
+                # 1500s budget: the backend suite spans 5 feature waves plus the
                 # marketplace export/import + publish-pipeline + remote-gallery
                 # HTTP integration tests (each module spins a full TestClient
-                # lifespan; packaging alone is ~83s, marketplace-external ~47s).
-                # Real wall time is ~430s; the headroom over that absorbs machine
-                # load (a concurrent installer build pushed a 430s run past the
-                # old 480s cap on 2026-06-13 — a timeout, not a test failure).
-                # If this gets painful, mark the heaviest live-AIRDB quality
-                # tests @pytest.mark.slow and add `-m "not slow"` here.
-                timeout=720,
+                # lifespan). Measured wall time on a QUIET machine was 920s on
+                # 2026-07-02 (567 passed / 115 skipped) — the old 720s cap
+                # produced two TIMEOUT blocks that looked like failures. The
+                # headroom over 920s absorbs machine load. If this gets painful,
+                # mark the heaviest HTTP-lifecycle tests @pytest.mark.slow and
+                # add `-m "not slow"` here — simple 2-request tests are showing
+                # 20-25s apiece, so there's real optimization headroom too.
+                timeout=1500,
             )
         except subprocess.TimeoutExpired as e:
             return False, f"TIMEOUT after {e.timeout}s", time.monotonic() - t0

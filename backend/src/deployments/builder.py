@@ -84,7 +84,11 @@ async def build_app(app_id: str, version: int, force: bool = False) -> Path:
 
         # Inject identity meta tags into dist/index.html so the deployed app
         # (and its SDK) can recover its app_id / version without depending on
-        # the local preview proxy's window.__AIHUB_*__ injection.
+        # the local preview proxy's window.__AIHUB_*__ injection. Identity only:
+        # no auth token is baked in (it would be user-specific and readable from
+        # the bundle). A deployed page that needs settings/datasets must have its
+        # host page set window.__AIHUB_TOKEN__ (see app-sdk/src/useAppConfig.ts);
+        # until then the SDK resolves config to {} there.
         inject_identity_meta(dist / "index.html", app_id=app_id, version=version)
 
         # Tar the dist/ directory at the top level of the archive.

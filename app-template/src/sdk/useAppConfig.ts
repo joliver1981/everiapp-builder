@@ -6,6 +6,13 @@
  *   2. fetch ${AIHUB_BASE}/api/apps/{id}/settings/resolved
  *      where AIHUB_BASE comes from import.meta.env.VITE_AIHUB_BASE_URL,
  *      or same-origin when the env var is empty.
+ *
+ * Auth: the resolved-settings endpoint is bearer-only (the platform never
+ * sets an access-token cookie), so the fetch relies on window.__AIHUB_TOKEN__.
+ * On-platform pages (builder Preview, app viewer) load apps through the
+ * runtime proxy, which injects it. Deployed or embedded pages are not behind
+ * that proxy: the host page must set window.__AIHUB_TOKEN__ before the app
+ * mounts — otherwise config resolves to {}.
  */
 
 import { useState, useEffect } from 'react'
@@ -14,6 +21,7 @@ declare global {
   interface Window {
     __AIHUB_CONFIG__?: Record<string, string>
     __AIHUB_APP_ID__?: string
+    __AIHUB_TOKEN__?: string
   }
 }
 
@@ -42,7 +50,13 @@ async function loadConfig(): Promise<Record<string, string>> {
 
   try {
     const url = `${AIHUB_BASE}/api/apps/${appId}/settings/resolved`
-    const response = await fetch(url, { credentials: 'include' })
+    // The preview proxy injects the viewer's bearer token; the endpoint
+    // requires auth (cookies alone don't carry it).
+    const headers: Record<string, string> = {}
+    if (window.__AIHUB_TOKEN__) {
+      headers['Authorization'] = `Bearer ${window.__AIHUB_TOKEN__}`
+    }
+    const response = await fetch(url, { credentials: 'include', headers })
     if (!response.ok) {
       console.error(`[AIHub SDK] Failed to load config: ${response.status}`)
       return {}

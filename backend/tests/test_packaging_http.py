@@ -209,6 +209,73 @@ def test_import_rejects_undeclared_file(client, token, exported_zip):
     assert "not declared" in r.json()["detail"]
 
 
+def _mutate_manifest(zip_bytes: bytes, change) -> bytes:
+    """Rewrite the package with `change(manifest_dict)` applied."""
+    def mut(name, data):
+        if name == MANIFEST_NAME:
+            manifest = json.loads(data)
+            change(manifest)
+            return name, json.dumps(manifest).encode()
+        return name, data
+    return _repack(zip_bytes, mut)
+
+
+def test_import_rejects_non_object_wizard(client, token, exported_zip):
+    """A garbage setup_wizard used to import fine and then 500 the setup endpoints."""
+    bad = _mutate_manifest(exported_zip, lambda m: m.update(setup_wizard="hello"))
+    r = client.post("/api/apps/import",
+                    files={"file": ("w.zip", bad, "application/zip")},
+                    headers=_auth(token))
+    assert r.status_code == 400
+    assert "setup_wizard" in r.json()["detail"]
+
+
+def test_import_rejects_invalid_wizard_schema(client, token, exported_zip):
+    bad = _mutate_manifest(exported_zip, lambda m: m.update(
+        setup_wizard={"steps": [{"fields": [{"key": "dup"}, {"key": "dup"}]}]}))
+    r = client.post("/api/apps/import",
+                    files={"file": ("w.zip", bad, "application/zip")},
+                    headers=_auth(token))
+    assert r.status_code == 400
+    assert "duplicate key" in r.json()["detail"]
+
+
+def test_import_refreshes_stale_vendored_sdk(client, token, exported_zip):
+    """A package from an older instance carries that instance's vendored SDK —
+    import must replace src/sdk with the CURRENT template's copy so fixed SDK
+    bugs (e.g. the config-fetch auth header) aren't reinstalled."""
+    stale = b"// ancient SDK without the Authorization header\nexport {}\n"
+    rel = "src/sdk/useAppConfig.ts"
+
+    def mut(name, data):
+        if name == f"app/{rel}":
+            return name, stale
+        if name == MANIFEST_NAME:
+            m = json.loads(data)
+            m["files"][rel] = {"checksum": hashlib.sha256(stale).hexdigest(), "size": len(stale)}
+            return name, json.dumps(m).encode()
+        return name, data
+
+    r = client.post("/api/apps/import",
+                    files={"file": ("stale-sdk.zip", _repack(exported_zip, mut), "application/zip")},
+                    headers=_auth(token))
+    assert r.status_code == 201, r.text
+    new_id = r.json()["app_id"]
+
+    imported = (Path(settings.app_data_dir) / new_id / "draft" / "frontend" / rel).read_text(encoding="utf-8")
+    template = (Path(__file__).resolve().parents[2] / "app-template" / rel).read_text(encoding="utf-8")
+    assert imported == template
+    assert "Authorization" in imported
+
+
+def test_import_accepts_absent_wizard(client, token, exported_zip):
+    ok = _mutate_manifest(exported_zip, lambda m: m.pop("setup_wizard", None))
+    r = client.post("/api/apps/import",
+                    files={"file": ("w.zip", ok, "application/zip")},
+                    headers=_auth(token))
+    assert r.status_code == 201, r.text
+
+
 def test_import_rejects_non_package_zip(client, token):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

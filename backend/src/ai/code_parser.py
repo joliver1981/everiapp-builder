@@ -152,8 +152,27 @@ def parse_llm_response(content: str) -> tuple[list[GeneratedFile], str, dict | N
 
 
 def _wizard_shaped(data) -> bool:
-    """A parsed object that IS a wizard schema (steps list, not a files payload)."""
-    return isinstance(data, dict) and isinstance(data.get("steps"), list) and not data.get("files")
+    """A parsed object that IS a wizard schema (steps list, not a files payload).
+
+    Steps must be non-empty objects whose `fields` (when present) are lists of
+    objects. Any dict with a `steps` list used to qualify, so a reply like
+    {"steps": ["clone the repo", "run npm install"]} — deployment steps as
+    JSON — was saved over the app's setup wizard and then 500'd the setup
+    endpoints. Shape-junk now stays conversational; schema-level validity
+    (key format, types, duplicates) is the save paths' job via validate_wizard.
+    """
+    if not (isinstance(data, dict) and isinstance(data.get("steps"), list) and not data.get("files")):
+        return False
+    steps = data["steps"]
+    if not steps:
+        return False
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        fields = step.get("fields", [])
+        if not isinstance(fields, list) or not all(isinstance(f, dict) for f in fields):
+            return False
+    return True
 
 
 def _extract_bare_wizard(content: str) -> tuple[dict | None, str]:

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   MessageSquare,
@@ -72,6 +72,24 @@ interface RuntimeStatusResp {
   phase?: string | null
   phase_detail?: string | null
   phase_elapsed_seconds?: number | null
+}
+
+// Right panel resize: the live-code panel defaults wider than the rest, so we
+// track (and persist) a dragged width per group rather than one shared value.
+const RIGHT_PANEL_MIN_WIDTH = 280
+const RIGHT_PANEL_DEFAULT_WIDTHS = { live: 544, other: 320 } as const
+type RightPanelWidths = { live: number; other: number }
+
+function loadRightPanelWidths(): RightPanelWidths {
+  try {
+    const saved = JSON.parse(localStorage.getItem('aihub.rightPanel.widths') || '{}')
+    return {
+      live: typeof saved.live === 'number' ? saved.live : RIGHT_PANEL_DEFAULT_WIDTHS.live,
+      other: typeof saved.other === 'number' ? saved.other : RIGHT_PANEL_DEFAULT_WIDTHS.other,
+    }
+  } catch {
+    return { ...RIGHT_PANEL_DEFAULT_WIDTHS }
+  }
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -149,6 +167,38 @@ export function AppBuilderPage() {
 
   const [activePanel, setActivePanel] = useState<Panel>('chat')
   const [rightPanel, setRightPanel] = useState<RightPanel>('none')
+  // Drag-to-resize state for the right panel (persisted per panel group).
+  const [rightPanelWidths, setRightPanelWidths] = useState<RightPanelWidths>(loadRightPanelWidths)
+  const [isResizingPanel, setIsResizingPanel] = useState(false)
+
+  useEffect(() => {
+    try { localStorage.setItem('aihub.rightPanel.widths', JSON.stringify(rightPanelWidths)) } catch { /* ignore */ }
+  }, [rightPanelWidths])
+
+  const startPanelResize = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const group = rightPanel === 'live' ? 'live' : 'other'
+    const startX = e.clientX
+    const startWidth = rightPanelWidths[group]
+    setIsResizingPanel(true)
+    const onMove = (ev: PointerEvent) => {
+      const maxWidth = Math.round(window.innerWidth * 0.7)
+      const width = Math.min(Math.max(startWidth + (startX - ev.clientX), RIGHT_PANEL_MIN_WIDTH), maxWidth)
+      setRightPanelWidths((w) => ({ ...w, [group]: width }))
+    }
+    const onUp = () => {
+      setIsResizingPanel(false)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [rightPanel, rightPanelWidths])
+
+  const resetPanelWidth = useCallback(() => {
+    const group = rightPanel === 'live' ? 'live' : 'other'
+    setRightPanelWidths((w) => ({ ...w, [group]: RIGHT_PANEL_DEFAULT_WIDTHS[group] }))
+  }, [rightPanel])
   // Jump-to-code: highlight range + token passed to the Code panel's editor.
   const [navHighlight, setNavHighlight] = useState<{ startLine: number; endLine: number } | null>(null)
   const [navRevealToken, setNavRevealToken] = useState(0)
@@ -211,13 +261,21 @@ export function AppBuilderPage() {
       )
       .then(setMarketplaceConfig)
       .catch(() => setMarketplaceConfig(null))
-    // Fresh dialog: publish the latest snapshot, prefill saved setup
-    // instructions, and default the release version to a minor bump of the
-    // last published semver (or 1.0.0 for a first publish).
+    // Fresh dialog: publish the latest snapshot, prefill the saved LISTING
+    // metadata (short desc, description, category, tags, license, setup
+    // instructions) so it stays consistent across publishes, and default the
+    // release version to a minor bump of the last published semver.
     setMarketplaceVersion(null)
     setSuggestError(null)
     setMarketplaceSetupInstructions(currentApp?.setup_instructions || '')
     setMarketplaceDescription(currentApp?.description || '')
+    const listing = currentApp?.marketplace_listing || {}
+    setMarketplaceShortDesc(listing.short_description || '')
+    setMarketplaceCategory(listing.category || 'general')
+    setMarketplaceTags((listing.tags || []).join(', '))
+    setMarketplaceLicense(listing.license || 'MIT')
+    // Release notes are per-version — always start fresh.
+    setMarketplaceNotes('')
     // Provisional seed from the local field; the effect below re-seeds off the
     // authoritative remote version list once it loads.
     const last = currentApp?.last_published_version || ''
@@ -1268,7 +1326,20 @@ export function AppBuilderPage() {
 
         {/* Right panel: Versions or Settings */}
         {rightPanel !== 'none' && (
-          <div className={cn('border-l border-border bg-card', rightPanel === 'live' ? 'w-[34rem]' : 'w-80')}>
+          <div
+            className="relative shrink-0 border-l border-border bg-card"
+            style={{ width: rightPanelWidths[rightPanel === 'live' ? 'live' : 'other'] }}
+          >
+            {/* Drag handle: straddles the left border; double-click resets to default width. */}
+            <div
+              onPointerDown={startPanelResize}
+              onDoubleClick={resetPanelWidth}
+              title="Drag to resize"
+              className={cn(
+                'absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize transition-colors hover:bg-primary/40',
+                isResizingPanel && 'bg-primary/40'
+              )}
+            />
             {rightPanel === 'live' && <LiveCodePanel />}
             {rightPanel === 'versions' && (
               <VersionsPanel
@@ -1305,6 +1376,12 @@ export function AppBuilderPage() {
           </div>
         )}
       </div>
+
+      {/* While dragging the panel edge, a transparent overlay keeps pointer events
+          away from the preview iframe (which would otherwise swallow the drag). */}
+      {isResizingPanel && (
+        <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
+      )}
 
       {/* Save Version dialog (local version snapshot) */}
       {showPublishDialog && (

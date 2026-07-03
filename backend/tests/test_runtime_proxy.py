@@ -107,6 +107,36 @@ def test_proxy_injects_app_id_and_token_from_query_param(client, admin_token, mo
     assert _FakeClient.last_url.startswith(f"http://127.0.0.1:9999/apps/{app_id}/")
 
 
+def test_proxy_injects_token_from_cookie(client, admin_token, monkeypatch):
+    """The app VIEWER's transport: an `access_token` cookie scoped to /apps —
+    keeps the bearer token out of the URL (address bar, history, access logs)."""
+    app_id = "viewer-app-cookie"
+    monkeypatch.setattr(runtime_manager, "get_status", lambda _id: SimpleNamespace(status="running", port=9999))
+    monkeypatch.setattr(proxy_mod, "_get_client", lambda: _FakeClient())
+
+    r = client.get(f"/apps/{app_id}/", cookies={"access_token": admin_token})
+    assert r.status_code == 200, r.text
+    assert f'window.__AIHUB_TOKEN__ = "{admin_token}";' in r.text
+    assert f'window.__AIHUB_APP_ID__ = "{app_id}";' in r.text
+
+
+def test_proxy_never_injects_undecodable_tokens(client, admin_token, monkeypatch):
+    """Expired/garbage tokens are dropped, and a bad transport must not shadow
+    a valid one further down the chain (bad cookie + good query param)."""
+    monkeypatch.setattr(runtime_manager, "get_status", lambda _id: SimpleNamespace(status="running", port=9999))
+    monkeypatch.setattr(proxy_mod, "_get_client", lambda: _FakeClient())
+
+    r = client.get("/apps/junk-token-app/?__aihub_token=not-a-jwt")
+    assert r.status_code == 200
+    assert "__AIHUB_TOKEN__" not in r.text
+    assert "__AIHUB_USER__" not in r.text
+
+    r = client.get(f"/apps/junk-token-app/?__aihub_token={admin_token}",
+                   cookies={"access_token": "expired-garbage"})
+    assert r.status_code == 200
+    assert f'window.__AIHUB_TOKEN__ = "{admin_token}";' in r.text
+
+
 def test_proxy_502_when_app_not_running(client, monkeypatch):
     monkeypatch.setattr(runtime_manager, "get_status", lambda _id: None)
     r = client.get("/apps/not-running-app/")

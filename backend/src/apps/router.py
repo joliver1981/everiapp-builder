@@ -40,6 +40,7 @@ def _app_to_response(app, creator=None) -> AppResponse:
         setup_wizard=app.setup_wizard,
         setup_instructions=app.setup_instructions or "",
         last_published_version=app.last_published_version or "",
+        marketplace_listing=app.marketplace_listing,
         installed_from=app.installed_from,
         created_by=app.created_by,
         creator_name=name,
@@ -197,7 +198,8 @@ async def get_wizard(
     app = await apps_service.get_app(db, app_id)
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
-    return app.setup_wizard or {}
+    # Non-dict rows (pre-validation imports) behave like "no wizard".
+    return app.setup_wizard if isinstance(app.setup_wizard, dict) else {}
 
 
 @router.put("/{app_id}/wizard")
@@ -250,7 +252,7 @@ async def apply_setup(
     app = await apps_service.get_app(db, app_id)
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
-    if not (app.setup_wizard or {}).get("steps"):
+    if not isinstance(app.setup_wizard, dict) or not app.setup_wizard.get("steps"):
         raise HTTPException(status_code=400, detail="This app has no setup wizard")
     try:
         applied = await apps_service.apply_wizard_values(db, app, body.values)

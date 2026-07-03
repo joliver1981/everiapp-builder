@@ -66,6 +66,8 @@ _MISSING_COLUMN_MIGRATIONS = [
     ("apps", "setup_instructions",            "TEXT DEFAULT ''"),
     # Last semver published to the external marketplace (bump-button seed)
     ("apps", "last_published_version",        "VARCHAR(20) DEFAULT ''"),
+    # Last-published marketplace listing metadata (JSON: short_desc/category/tags/license)
+    ("apps", "marketplace_listing",           "TEXT"),
 ]
 
 

@@ -107,37 +107,32 @@ async def proxy_app_http(request: Request, app_id: str, path: str = ""):
     if not proc or proc.status != "running":
         raise HTTPException(status_code=502, detail="App is not running. Start it first.")
 
-    # Try to extract user context from Authorization header
+    # Extract user context. Three transports, first VALID one wins — an expired
+    # or garbage token is discarded (never injected into the page) so the next
+    # transport can still authenticate the request:
+    #   1. Authorization header (programmatic calls);
+    #   2. `access_token` cookie scoped to /apps — the app viewer sets this
+    #      (an iframe navigation can't send a header, and a query param would
+    #      leak the token into the address bar, history, and access logs);
+    #   3. ?__aihub_token= query param — the builder's Preview iframe.
+    from ..auth.service import auth_service
+
     user_info = None
     token = None
     auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        from ..auth.service import auth_service
-        payload = auth_service.decode_access_token(token)
+    candidates = [
+        auth_header[7:] if auth_header.startswith("Bearer ") else None,
+        request.cookies.get("access_token"),
+        request.query_params.get("__aihub_token"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        payload = auth_service.decode_access_token(candidate)
         if payload:
+            token = candidate
             user_info = {"id": payload["sub"], "username": payload.get("username", ""), "role": payload.get("role", "")}
-
-    # Also check for token in cookie (for iframe scenarios)
-    if not token:
-        token = request.cookies.get("access_token")
-        if token:
-            from ..auth.service import auth_service
-            payload = auth_service.decode_access_token(token)
-            if payload:
-                user_info = {"id": payload["sub"], "username": payload.get("username", ""), "role": payload.get("role", "")}
-
-    # Finally, accept a token via the ?__aihub_token= query param. The builder's Preview iframe
-    # uses this: an iframe navigation can't set an Authorization header, and AIHub keeps the
-    # access token in localStorage (not a cookie), so this is how the dev's token reaches the
-    # injected SDK globals (window.__AIHUB_TOKEN__) for dataset/app-DB calls.
-    if not token:
-        token = request.query_params.get("__aihub_token")
-        if token:
-            from ..auth.service import auth_service
-            payload = auth_service.decode_access_token(token)
-            if payload:
-                user_info = {"id": payload["sub"], "username": payload.get("username", ""), "role": payload.get("role", "")}
+            break
 
     return await proxy_http(request, proc.port, app_id, path, user=user_info, token=token)
 

@@ -33,6 +33,7 @@ class AppResponse(BaseModel):
     setup_wizard: dict | None = None
     setup_instructions: str = ""
     last_published_version: str = ""
+    marketplace_listing: dict | None = None
     installed_from: str | None = None
     created_by: str
     creator_name: str

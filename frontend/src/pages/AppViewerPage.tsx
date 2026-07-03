@@ -61,6 +61,7 @@ export function AppViewerPage() {
 
   // Post-install setup: prompt when required wizard fields have no values yet.
   const user = useAuthStore((s) => s.user)
+  const token = useAuthStore(() => apiClient.getToken())
   const canConfigure = user?.role === 'admin' || user?.role === 'developer'
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null)
   const [setupWizard, setSetupWizard] = useState<WizardSchema | null>(null)
@@ -218,6 +219,24 @@ export function AppViewerPage() {
     )
   }
 
+  // Local previews go through the platform runtime proxy (/apps/{id}/), NOT the
+  // raw Vite port, so the proxy injects the SDK globals (window.__AIHUB_APP_ID__ /
+  // __AIHUB_TOKEN__) — without them useAppConfig()/useDataset() resolve empty.
+  // The token travels as an `access_token` cookie scoped to /apps (a transport
+  // the proxy already accepts), NOT as a ?__aihub_token= query param: the viewer
+  // is reachable by every user role, and a token in the URL would land in the
+  // address bar (Open in new tab), browser history, and backend access logs.
+  // Cookies are host-scoped, so the dev split-origin (5173 → 8800) still works.
+  // Re-set on every render so a refreshed token reaches the next iframe request
+  // without changing the iframe src (no forced reload). Deployed apps are served
+  // from their target host; see app-sdk/src/useAppConfig.ts for their contract.
+  if (token) {
+    document.cookie = `access_token=${token}; path=/apps; SameSite=Lax` +
+      (window.location.protocol === 'https:' ? '; Secure' : '')
+  }
+  const previewProxyUrl =
+    `${import.meta.env.DEV ? 'http://localhost:8800' : ''}/apps/${app.id}/`
+
   return (
     <div className="flex h-screen flex-col">
       {/* Top bar (hidden in fullscreen) */}
@@ -242,14 +261,7 @@ export function AppViewerPage() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => window.open(
-                deployedUrl
-                  ? deployedUrl
-                  : runtimePort
-                    ? `http://localhost:${runtimePort}/`
-                    : `/apps/${app.id}/`,
-                '_blank',
-              )}
+              onClick={() => window.open(deployedUrl ?? previewProxyUrl, '_blank')}
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               title="Open in new tab"
             >
@@ -299,7 +311,7 @@ export function AppViewerPage() {
         {runtimeStatus === 'running' && (deployedUrl || runtimePort) ? (
           <iframe
             key={iframeKey}
-            src={deployedUrl ?? `http://localhost:${runtimePort}/`}
+            src={deployedUrl ?? previewProxyUrl}
             className="h-full w-full border-0"
             title={app.name}
           />

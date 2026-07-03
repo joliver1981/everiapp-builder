@@ -68,6 +68,32 @@ def validate_wizard(wizard: dict) -> list[str]:
     return errors
 
 
+def sanitized_wizard(wizard) -> dict | None:
+    """Lenient gate for wizards arriving from stored data (e.g. marketplace
+    listings written before write-path validation existed): the wizard when
+    valid, None otherwise. Paths that can report errors to a user should call
+    validate_wizard directly and reject instead."""
+    if not isinstance(wizard, dict) or validate_wizard(wizard):
+        return None
+    return wizard
+
+
+def refresh_vendored_sdk(frontend_dir: Path) -> None:
+    """Overwrite an app tree's src/sdk with the current template's copy.
+
+    The vendored SDK is platform infrastructure snapshotted into every app at
+    scaffold time; trees arriving from packages or old version snapshots carry
+    whatever the SOURCE instance ran, silently reintroducing already-fixed SDK
+    bugs (e.g. the config-fetch auth header). Apps must not edit these files
+    (generation prompt rule), so a straight replace is safe. No-op when either
+    side is missing."""
+    template_sdk = Path(__file__).parent.parent.parent.parent / "app-template" / "src" / "sdk"
+    vendored = frontend_dir / "src" / "sdk"
+    if template_sdk.exists() and vendored.exists():
+        shutil.rmtree(vendored)
+        shutil.copytree(template_sdk, vendored)
+
+
 class AppsService:
     async def list_apps(self, db: AsyncSession, user: User) -> list[App]:
         if user.role == "admin":
@@ -398,13 +424,23 @@ class AppsService:
         global_secret_ref (a pointer) instead of a value. Does NOT commit —
         callers own the transaction (installs batch this with other writes).
         """
-        wizard = app.setup_wizard or {}
+        # isinstance guards: rows stored before write-path validation may hold
+        # arbitrary JSON — skip garbage instead of raising AttributeError.
+        wizard = app.setup_wizard if isinstance(app.setup_wizard, dict) else {}
         if not values or not wizard.get("steps"):
             return 0
         existing = {s.key: s for s in await self.list_settings(db, app.id)}
         applied = 0
-        for step in wizard.get("steps", []):
-            for field in step.get("fields", []):
+        steps = wizard.get("steps")
+        for step in steps if isinstance(steps, list) else []:
+            if not isinstance(step, dict):
+                continue
+            fields = step.get("fields")
+            if not isinstance(fields, list):
+                continue
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
                 key = field.get("key")
                 if not key or key not in values:
                     continue
@@ -447,17 +483,23 @@ class AppsService:
         A field is satisfied by a setting row with a value, a global-secret
         pointer, or a default. Drives the post-install "Complete setup" flow.
         """
-        wizard = app.setup_wizard or {}
-        steps = wizard.get("steps") or []
-        if not steps:
+        # isinstance guards mirror apply_wizard_values — pre-validation rows.
+        wizard = app.setup_wizard if isinstance(app.setup_wizard, dict) else {}
+        steps = wizard.get("steps")
+        if not isinstance(steps, list) or not steps:
             return {"has_wizard": False, "complete": True, "missing": [], "required_total": 0}
 
         rows = {s.key: s for s in await self.list_settings(db, app.id)}
         missing: list[dict] = []
         required_total = 0
         for step in steps:
-            for field in step.get("fields", []):
-                if not field.get("required"):
+            if not isinstance(step, dict):
+                continue
+            fields = step.get("fields")
+            if not isinstance(fields, list):
+                continue
+            for field in fields:
+                if not isinstance(field, dict) or not field.get("required"):
                     continue
                 key = field.get("key")
                 if not key:

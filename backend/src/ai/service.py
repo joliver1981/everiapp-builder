@@ -427,13 +427,22 @@ class AIService:
                                            files=[f.get("path") for f in (ev.get("data") or [])])
                         yield ev
 
-            # Save wizard schema if generated
+            # Save wizard schema if generated — but never an invalid one: a bad
+            # stored schema breaks setup-status/setup for viewers and blocks
+            # every subsequent manual save (PUT re-validates the whole document).
             if wizard:
-                result = await db.execute(select(App).where(App.id == app_id))
-                app = result.scalar_one_or_none()
-                if app:
-                    app.setup_wizard = wizard
-                yield {"type": "wizard", "data": wizard}
+                from ..apps.service import validate_wizard
+                wizard_errors = validate_wizard(wizard)
+                if wizard_errors:
+                    logger.warning("Discarding invalid AI-generated wizard for %s: %s",
+                                   app_id, "; ".join(wizard_errors))
+                    yield {"type": "wizard_invalid", "data": {"errors": wizard_errors}}
+                else:
+                    result = await db.execute(select(App).where(App.id == app_id))
+                    app = result.scalar_one_or_none()
+                    if app:
+                        app.setup_wizard = wizard
+                    yield {"type": "wizard", "data": wizard}
 
             # Save assistant message (full raw response for history context)
             assistant_msg = Message(

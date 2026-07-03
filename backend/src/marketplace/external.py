@@ -220,6 +220,17 @@ async def publish_app(
     if description is not None and description.strip():
         app.description = description
 
+    # Remember the listing-level metadata so the publish dialog prefills it next
+    # time. These are properties of the LISTING (not a version), so they should
+    # stay consistent across publishes rather than resetting every time.
+    effective_short = short_description or (app.description or app.name)[:300]
+    app.marketplace_listing = {
+        "short_description": effective_short,
+        "category": category,
+        "tags": tags or [],
+        "license": license,
+    }
+
     # 1. Package
     try:
         zip_bytes, filename = await packaging_service.export_app(db, app_id, target_version)
@@ -259,7 +270,7 @@ async def publish_app(
         payload = {
             "name": app.name,
             "slug": slug,
-            "shortDescription": short_description or (app.description or app.name)[:300],
+            "shortDescription": effective_short,
             "description": app.description or f"# {app.name}\n\nPublished from AIHub Builder.",
             "category": category,
             "tags": tags or [],
@@ -384,7 +395,8 @@ async def install_remote(
     if resp.status_code != 200:
         raise MarketplaceError(f"Marketplace download failed ({resp.status_code}): {_error_detail(resp)}")
 
-    # import_app re-validates everything (manifest, checksums, path safety).
+    # import_app re-validates everything (manifest, checksums, path safety,
+    # setup_wizard schema).
     try:
         app = await packaging_service.import_app(db, resp.content, user_id)
     except PackageError as e:

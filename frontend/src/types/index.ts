@@ -31,6 +31,12 @@ export interface App {
   ai_verify_max_iterations?: number
   setup_instructions?: string
   last_published_version?: string
+  marketplace_listing?: {
+    short_description?: string
+    category?: string
+    tags?: string[]
+    license?: string
+  } | null
   created_by: string
   created_at: string
   updated_at: string

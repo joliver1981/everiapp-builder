@@ -182,6 +182,62 @@ def test_setup_requires_wizard(client, admin):
     assert r.json() == {"has_wizard": False, "complete": True, "missing": [], "required_total": 0}
 
 
+# --------------------------------------- garbage wizards stored pre-validation
+
+def _force_stored_wizard(app_id: str, wizard) -> None:
+    """Write setup_wizard directly, bypassing the (now validated) write paths —
+    simulates rows created before validation existed."""
+    import json as _json
+    import sqlite3
+    from src.config import settings
+    # settings wins over this module's _DB when the whole suite shares a process.
+    conn = sqlite3.connect(settings.database_url[len("sqlite+aiosqlite:///"):])
+    try:
+        conn.execute("UPDATE apps SET setup_wizard = ? WHERE id = ?",
+                     (_json.dumps(wizard), app_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_garbage_wizard_rows_degrade_instead_of_500(client, admin):
+    """Steps-of-strings rows used to AttributeError → 500 on setup-status/setup."""
+    r = client.post("/api/apps", json={"name": "Garbage Wizard App"}, headers=admin)
+    app_id = r.json()["id"]
+    _force_stored_wizard(app_id, {"steps": ["step one", "step two"]})
+
+    r = client.get(f"/api/apps/{app_id}/setup-status", headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json()["complete"] is True          # nothing enforceable in garbage
+
+    r = client.post(f"/api/apps/{app_id}/setup", json={"values": {"x": "y"}}, headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] == 0
+
+
+def test_non_dict_wizard_row_behaves_like_no_wizard(client, admin):
+    r = client.post("/api/apps", json={"name": "String Wizard App"}, headers=admin)
+    app_id = r.json()["id"]
+    _force_stored_wizard(app_id, "hello")
+
+    r = client.get(f"/api/apps/{app_id}/setup-status", headers=admin)
+    assert r.status_code == 200 and r.json()["has_wizard"] is False
+    assert client.post(f"/api/apps/{app_id}/setup",
+                       json={"values": {"x": "1"}}, headers=admin).status_code == 400
+    assert client.get(f"/api/apps/{app_id}/wizard", headers=admin).json() == {}
+
+
+def test_sanitized_wizard_gate():
+    """Lenient gate used by marketplace installs for pre-validation listings."""
+    from src.apps.service import sanitized_wizard
+    good = {"steps": [{"fields": [{"key": "a"}]}]}
+    assert sanitized_wizard(good) == good
+    assert sanitized_wizard(None) is None
+    assert sanitized_wizard("hello") is None
+    assert sanitized_wizard({"steps": ["a"]}) is None
+    assert sanitized_wizard({"steps": [{"fields": [{"key": "dup"}, {"key": "dup"}]}]}) is None
+
+
 # ------------------------------------------- resolved-settings access (SDK fix)
 
 def test_plain_user_can_resolve_open_app_settings(client, plain_user, wizard_app):

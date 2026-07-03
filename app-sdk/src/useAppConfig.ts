@@ -6,6 +6,13 @@
  *   2. fetch ${AIHUB_BASE}/api/apps/{id}/settings/resolved
  *      where AIHUB_BASE comes from import.meta.env.VITE_AIHUB_BASE_URL,
  *      or same-origin when the env var is empty.
+ *
+ * Auth: the resolved-settings endpoint is bearer-only (the platform never
+ * sets an access-token cookie), so the fetch relies on window.__AIHUB_TOKEN__.
+ * On-platform pages (builder Preview, app viewer) load apps through the
+ * runtime proxy, which injects it. Deployed or embedded pages are not behind
+ * that proxy: the host page must set window.__AIHUB_TOKEN__ before the app
+ * mounts — otherwise config resolves to {}.
  */
 
 import { useState, useEffect } from 'react'

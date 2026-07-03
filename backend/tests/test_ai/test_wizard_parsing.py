@@ -74,6 +74,39 @@ def test_plain_json_that_is_not_a_wizard_stays_conversational():
     assert files == []
 
 
+def test_steps_of_strings_is_not_a_wizard():
+    """{"steps": ["...", "..."]} — e.g. deployment steps as JSON — used to be
+    saved over the app's wizard and then 500'd setup-status/setup."""
+    files, desc, wizard = parse_llm_response(json.dumps({"steps": ["clone repo", "npm install"]}))
+    assert wizard is None
+    assert files == []
+
+
+def test_fenced_steps_of_strings_is_not_a_wizard():
+    content = "Here you go:\n```json\n" + json.dumps({"steps": ["a", "b"]}) + "\n```"
+    files, desc, wizard = parse_llm_response(content)
+    assert wizard is None
+    assert files == []
+
+
+def test_empty_steps_is_not_a_wizard():
+    """An empty steps list must not silently wipe an existing wizard."""
+    _, _, wizard = parse_llm_response(json.dumps({"steps": []}))
+    assert wizard is None
+
+
+def test_step_with_non_object_fields_is_not_a_wizard():
+    _, _, wizard = parse_llm_response(json.dumps({"steps": [{"title": "s", "fields": ["nope"]}]}))
+    assert wizard is None
+
+
+def test_step_without_fields_still_wizard_shaped():
+    """Steps may omit `fields` (validate_wizard allows it) — shape check must too."""
+    w = {"steps": [{"title": "Intro"}, {"title": "Keys", "fields": [{"key": "k"}]}]}
+    _, _, wizard = parse_llm_response(json.dumps(w))
+    assert wizard == w
+
+
 def test_file_blocks_take_priority():
     content = (
         "New component:\n```tsx\n// FILE: src/Thing.tsx\nexport const T = 1\n```"

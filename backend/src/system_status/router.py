@@ -83,7 +83,7 @@ async def system_status(db: AsyncSession = Depends(get_db),
     }
 
     return {
-        "version": "0.1.0",
+        "version": "0.2.0",
         "debug": settings.debug,
         "uptime_seconds": uptime,
         "running_apps": running_apps,

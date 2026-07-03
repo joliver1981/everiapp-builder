@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..apps.models import App, AppVersion
 from ..apps.schemas import AppCreate
-from ..apps.service import apps_service
+from ..apps.service import apps_service, refresh_vendored_sdk, validate_wizard
 from ..config import settings
 from ..secrets.models import AuditLog
 
@@ -173,6 +173,11 @@ class PackagingService:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
 
+            # The package's src/sdk is a snapshot of whatever template the
+            # SOURCE instance ran — refresh so imported apps don't reintroduce
+            # already-fixed SDK bugs (e.g. the config-fetch auth header).
+            refresh_vendored_sdk(draft_dir)
+
         await asyncio.get_event_loop().run_in_executor(None, _write_files)
 
         app.setup_wizard = manifest.get("setup_wizard")
@@ -211,6 +216,19 @@ class PackagingService:
                     f"Unsupported package schema {manifest.get('schema')!r} "
                     f"(this builder supports schema {PACKAGE_SCHEMA})"
                 )
+            # A malformed wizard would 500 the setup endpoints and lock the
+            # manual editor (PUT re-validates the whole document) — reject the
+            # package outright, like a bad checksum.
+            wizard = manifest.get("setup_wizard")
+            if wizard is not None:
+                if not isinstance(wizard, dict):
+                    raise PackageError("Manifest 'setup_wizard' must be an object")
+                wizard_errors = validate_wizard(wizard)
+                if wizard_errors:
+                    raise PackageError(
+                        "Invalid setup_wizard in manifest: " + "; ".join(wizard_errors)
+                    )
+
             declared = manifest.get("files")
             if not isinstance(declared, dict) or not declared:
                 raise PackageError("Manifest declares no files")

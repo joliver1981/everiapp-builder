@@ -487,3 +487,32 @@ def test_publish_persists_edited_description(client, token, published_app, confi
     assert FAKE["published"][-1]["description"] == "# My App\n\nA great listing description with **markdown**."
     r = client.get(f"/api/apps/{published_app}", headers=_auth(token))
     assert r.json()["description"] == "# My App\n\nA great listing description with **markdown**."
+
+
+def test_listing_metadata_persists_for_prefill(client, token, configured):
+    """Listing fields (short desc, category, tags, license) are saved on the app
+    so the publish dialog prefills them next time instead of resetting."""
+    r = client.post("/api/apps", json={"name": "Listing Persist App"}, headers=_auth(token))
+    app_id = r.json()["id"]
+    draft = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
+    (draft / "src").mkdir(parents=True, exist_ok=True)
+    (draft / "src" / "x.ts").write_text("export const X = 1\n")
+    r = client.post(f"/api/apps/{app_id}/versions", json={"notes": "v1"}, headers=_auth(token))
+    assert r.status_code == 201, r.text
+
+    r = client.post("/api/marketplace/publish-external", json={
+        "app_id": app_id,
+        "version_semver": "1.0.0",
+        "short_description": "A crisp one-liner for the gallery.",
+        "category": "productivity",
+        "tags": ["standup", "scrum"],
+        "license": "Apache-2.0",
+        "capture_screenshots": False,
+    }, headers=_auth(token))
+    assert r.status_code == 200, r.text
+
+    listing = client.get(f"/api/apps/{app_id}", headers=_auth(token)).json()["marketplace_listing"]
+    assert listing["short_description"] == "A crisp one-liner for the gallery."
+    assert listing["category"] == "productivity"
+    assert listing["tags"] == ["standup", "scrum"]
+    assert listing["license"] == "Apache-2.0"

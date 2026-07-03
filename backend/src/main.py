@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AIHub Platform",
     description="AI-powered app development and deployment platform",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -234,7 +234,7 @@ async def health_check():
         status_code=200 if db_ok else 503,
         content={
             "status": "healthy" if db_ok else "degraded",
-            "version": "0.1.0",
+            "version": "0.2.0",
             "debug": settings.debug,
             "uptime_seconds": uptime,
             "database": "ok" if db_ok else "error",

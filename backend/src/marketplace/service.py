@@ -1,4 +1,5 @@
 """Marketplace service — listing CRUD and app install logic."""
+import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..apps.models import App
 from ..apps.schemas import AppSettingCreate
-from ..apps.service import apps_service
+from ..apps.service import apps_service, refresh_vendored_sdk, sanitized_wizard
+
+logger = logging.getLogger(__name__)
 from .models import MarketplaceListing
 from .schemas import ListingCreate, ListingUpdate
 
@@ -111,19 +114,29 @@ class MarketplaceService:
             db, AppCreate(name=listing.name, description=listing.description, icon=listing.icon), user_id
         )
 
-        # Copy files from source version to new app's draft
+        # Copy files from source version to new app's draft. Version snapshots
+        # carry the SDK vendored at scaffold time — refresh from the current
+        # template (mirrors packaging.import_app).
         target_dir = Path(settings.app_data_dir) / new_app.id / "draft" / "frontend"
         if target_dir.exists():
             shutil.rmtree(target_dir)
         shutil.copytree(source_dir, target_dir)
+        refresh_vendored_sdk(target_dir)
 
-        # Mark as installed from marketplace
+        # Mark as installed from marketplace. Lenient wizard gate: a listing
+        # stored before write-path validation may carry an invalid schema —
+        # install without it rather than fail (or 500 setup later).
         new_app.installed_from = listing_id
-        new_app.setup_wizard = listing.setup_wizard
+        new_app.setup_wizard = sanitized_wizard(listing.setup_wizard)
+        if listing.setup_wizard and new_app.setup_wizard is None:
+            logger.warning(
+                "Listing %s carries an invalid setup wizard — installed app %s without it",
+                listing_id, new_app.id,
+            )
 
         # Create app settings from wizard values (secrets encrypted, upserted
         # through the shared wizard-apply path)
-        if wizard_values and listing.setup_wizard:
+        if wizard_values and new_app.setup_wizard:
             await apps_service.apply_wizard_values(db, new_app, wizard_values)
 
         # Increment install count
