@@ -29,6 +29,37 @@ interface SpanRow {
   created_at: string | null
 }
 
+interface Issue {
+  key: string
+  label: string
+  count: number
+  severity: 'error' | 'warn'
+}
+
+/** Rules-only issue detection (the copilot's Observe level — zero LLM cost). */
+function detectIssues(spans: SpanRow[]): Issue[] {
+  const byKey = new Map<string, Issue>()
+  const bump = (key: string, label: string, severity: Issue['severity']) => {
+    const cur = byKey.get(key)
+    if (cur) cur.count += 1
+    else byKey.set(key, { key, label, count: 1, severity })
+  }
+  for (const s of spans) {
+    if (s.kind === 'ai.decision' && s.status === 'error') {
+      bump(`fb:${s.name}`, `Decision “${s.name}” falling back`, 'warn')
+    } else if (s.status === 'error') {
+      const sig = (s.error || '').slice(0, 60)
+      bump(`err:${s.kind}:${s.name}:${sig}`,
+           `${s.kind === 'ui.error' ? 'On-screen error' : `${s.name || s.kind} failing`}: ${sig || 'unknown'}`,
+           'error')
+    } else if (s.latency_ms > 2000 && s.kind !== 'ui.interaction') {
+      bump(`slow:${s.kind}:${s.name}`, `${s.name || s.kind} is slow (>${Math.round(s.latency_ms / 1000)}s)`, 'warn')
+    }
+  }
+  return [...byKey.values()].sort((a, b) =>
+    (a.severity === b.severity ? b.count - a.count : a.severity === 'error' ? -1 : 1))
+}
+
 function narrate(s: SpanRow): string {
   const name = s.name || s.purpose || s.kind
   const ms = s.latency_ms ? ` — ${s.latency_ms}ms` : ''
@@ -69,20 +100,31 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<'story' | 'timeline'>('story')
   const [loading, setLoading] = useState(false)
+  const [live, setLive] = useState(true)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       setSpans(await apiClient.get<SpanRow[]>(`/apps/${appId}/spans?limit=500`))
       setError(null)
     } catch (e: any) {
       setError(e.message)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [appId])
 
   useEffect(() => { load() }, [load])
+
+  // Live follow: poll quietly while the modal is open (spans land async via
+  // the batched writer, so a running preview streams in near-real-time).
+  useEffect(() => {
+    if (!live) return
+    const t = setInterval(() => load(true), 3000)
+    return () => clearInterval(t)
+  }, [live, load])
+
+  const issues = spans ? detectIssues(spans) : []
 
   // Group into sessions by trace_id, newest session first; chronological within.
   const sessions: Array<{ traceId: string | null; rows: SpanRow[] }> = []
@@ -127,7 +169,15 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
                 </button>
               ))}
             </div>
-            <button onClick={load} title="Refresh"
+            <button
+              onClick={() => setLive((v) => !v)}
+              title={live ? 'Live follow ON — polling every 3s' : 'Live follow OFF'}
+              className={cn('rounded px-2 py-1 text-[10px] font-medium',
+                live ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground')}
+            >
+              ● Live
+            </button>
+            <button onClick={() => load()} title="Refresh"
                     className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
               {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             </button>
@@ -136,6 +186,25 @@ export function TraceInspectorModal({ appId, onClose }: { appId: string; onClose
             </button>
           </div>
         </div>
+
+        {issues.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 border-b border-border px-4 py-2">
+            {issues.slice(0, 6).map((i) => (
+              <span
+                key={i.key}
+                className={cn(
+                  'rounded-full px-2.5 py-0.5 text-[11px]',
+                  i.severity === 'error'
+                    ? 'bg-destructive/10 text-destructive'
+                    : 'bg-warning/10 text-warning-foreground text-amber-600',
+                )}
+                title="Detected by rules over the trace — no AI cost"
+              >
+                {i.label}{i.count > 1 ? ` (${i.count}×)` : ''}
+              </span>
+            ))}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4">
           {error && (
