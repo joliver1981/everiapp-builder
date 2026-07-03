@@ -145,6 +145,14 @@ class SpanWriter:
                 prompt = item.pop("prompt_text", None)
                 response = item.pop("response_text", None)
                 item["capture_level"] = level
+                if level == "metadata_only":
+                    # Client-controlled free text must respect the reduced
+                    # capture level too: error text is bounded hard, and click
+                    # labels (which mirror on-screen user data) are redacted.
+                    if item.get("error"):
+                        item["error"] = str(item["error"])[:200]
+                    if item.get("kind") == "ui.interaction":
+                        item["name"] = "(interaction)"
                 if level == "full":
                     try:
                         if prompt:

@@ -50,6 +50,7 @@ import { EmbedModal } from '@/components/builder/EmbedModal'
 import { DependencyScanModal } from '@/components/builder/DependencyScanModal'
 import { RewindModal } from '@/components/builder/RewindModal'
 import { TracesModal } from '@/components/builder/TracesModal'
+import { TraceInspectorModal } from '@/components/builder/TraceInspectorModal'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useAppStore } from '@/stores/appStore'
 import { useChatStore } from '@/stores/chatStore'
@@ -1796,6 +1797,7 @@ function VersionsPanel({
   const [showDeps, setShowDeps] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showTraces, setShowTraces] = useState(false)
+  const [showAppTrace, setShowAppTrace] = useState(false)
 
   return (
     <div className="flex h-full flex-col">
@@ -1811,6 +1813,9 @@ function VersionsPanel({
           <button onClick={() => setShowTraces(true)}
                   className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
                   title="Inspect what the AI did on each build — full traceability">Traces</button>
+          <button onClick={() => setShowAppTrace(true)}
+                  className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                  title="What the RUNNING app did — clicks, dataset calls, AI calls, errors, in plain English">Inspector</button>
           {currentVersion > 0 && (
             <button
               onClick={() => setDiffRefs({ from: String(currentVersion), to: 'draft' })}
@@ -1836,6 +1841,7 @@ function VersionsPanel({
       {showDeps && <DependencyScanModal appId={appId} onClose={() => setShowDeps(false)} />}
       {showHistory && <RewindModal appId={appId} onClose={() => setShowHistory(false)} />}
       {showTraces && <TracesModal appId={appId} onClose={() => setShowTraces(false)} />}
+      {showAppTrace && <TraceInspectorModal appId={appId} onClose={() => setShowAppTrace(false)} />}
       <div className="flex-1 overflow-y-auto p-3">
         {versions.length === 0 ? (
           <div className="py-8 text-center text-xs text-muted-foreground">

@@ -94,6 +94,26 @@ def build_analyzer_user_prompt(
                     f"    {err.get('method', 'GET')} {err.get('url')} "
                     f"-> {err.get('status', 'ERR')} {err.get('error', '')}"
                 )
+        # Trace spine: the SDK attaches the session's recent client spans —
+        # clicks, dataset/app-DB calls, UI errors, with timings. This is the
+        # chronological "what happened", far more diagnostic than console text.
+        spans = captured_context.get("recent_spans") or []
+        if spans:
+            trace_id = captured_context.get("trace_id")
+            parts.append(f"- Traced events leading up to the report"
+                         f"{f' (trace {trace_id})' if trace_id else ''}, oldest first:")
+            for s in spans[-40:]:
+                if not isinstance(s, dict):
+                    continue
+                line = (f"    [{s.get('kind', '?')}] {s.get('name', '')}"
+                        f" — {s.get('status', '?')}")
+                if s.get("latency_ms"):
+                    line += f" in {s['latency_ms']}ms"
+                if s.get("error"):
+                    line += f" | error: {str(s['error'])[:300]}"
+                if s.get("detail"):
+                    line += f" | detail: {str(s['detail'])[:200]}"
+                parts.append(line)
 
     if extra_note:
         parts.append(f"\n# Additional context from the human reviewer\n{extra_note}")

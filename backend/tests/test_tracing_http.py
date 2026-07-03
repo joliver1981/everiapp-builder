@@ -289,6 +289,138 @@ def test_retention_sweep_deletes_old_spans(client, admin, provider, fake_llm):
     assert _spans(app_id) == []
 
 
+def _widget_app(client, admin, name: str) -> str:
+    """An app with the bug/telemetry widget enabled — the opt-in that anonymous
+    span ingestion shares with anonymous bug reports."""
+    r = client.post("/api/apps", json={"name": name}, headers=admin)
+    app_id = r.json()["id"]
+    assert client.put(f"/api/apps/{app_id}", json={"bug_widget_enabled": True},
+                      headers=admin).status_code == 200
+    return app_id
+
+
+def test_ingest_client_spans_anonymous(client, admin):
+    _set_capture_level("full")
+    app_id = _widget_app(client, admin, "Ingest App")
+
+    r = client.post(f"/api/apps/{app_id}/spans", json={"spans": [
+        {"kind": "dataset.query", "name": "recent_orders", "trace_id": TRACE_ID,
+         "status": "ok", "latency_ms": 42, "detail": '{"params": {"region": "west"}}'},
+        {"kind": "ui.error", "name": "OrderForm", "trace_id": TRACE_ID,
+         "status": "error", "error": "TypeError: x is undefined", "latency_ms": 0},
+        {"kind": "not.a.kind", "name": "ignored"},
+    ]})  # no auth header on purpose — deployed apps can be tokenless
+    assert r.status_code == 202, r.text
+    assert r.json()["accepted"] == 2
+
+    rows = _wait_for_spans(app_id, 2)
+    by_kind = {s["kind"]: s for s in rows}
+    ds = by_kind["dataset.query"]
+    assert ds["purpose"] == "app_runtime" and ds["trace_id"] == TRACE_ID
+    assert ds["user_id"] is None and ds["latency_ms"] == 42
+    assert ds["prompt_ct"]  # detail captured (encrypted) under full
+    assert "region" not in json.dumps(rows, default=str)  # ...but not in plaintext
+    err = by_kind["ui.error"]
+    assert err["status"] == "error" and "TypeError" in err["error"]
+
+
+def test_ingest_validation(client, admin):
+    app_id = _widget_app(client, admin, "Ingest Validation App")
+    too_many = {"spans": [{"kind": "ui.error"}] * 101}
+    assert client.post(f"/api/apps/{app_id}/spans", json=too_many).status_code == 422
+    assert client.post(f"/api/apps/{app_id}/spans", json={"spans": []}).status_code == 422
+    assert client.post("/api/apps/no-such-app/spans",
+                       json={"spans": [{"kind": "ui.error"}]}).status_code == 404
+    # Malformed trace ids are dropped to NULL, not rejected.
+    r = client.post(f"/api/apps/{app_id}/spans", json={"spans": [
+        {"kind": "ui.interaction", "name": "Save", "trace_id": "<bad id>"}]})
+    assert r.status_code == 202
+    span = _wait_for_spans(app_id, 1)[0]
+    assert span["trace_id"] is None
+
+
+def test_ingest_anonymous_requires_widget_optin(client, admin):
+    """Anonymous span writes share the bug-widget opt-in; a bearer bypasses it."""
+    r = client.post("/api/apps", json={"name": "No Optin App"}, headers=admin)
+    app_id = r.json()["id"]  # widget NOT enabled
+    body = {"spans": [{"kind": "ui.error", "name": "boom", "status": "error"}]}
+    assert client.post(f"/api/apps/{app_id}/spans", json=body).status_code == 403
+    # Authenticated callers (builder preview) are always allowed.
+    assert client.post(f"/api/apps/{app_id}/spans", json=body, headers=admin).status_code == 202
+
+
+def test_ingest_anonymous_throttle(client, admin, monkeypatch):
+    from src.tracing import router as tracing_router
+    monkeypatch.setattr(tracing_router, "_ANON_SPANS_PER_MINUTE", 5)
+    tracing_router._anon_windows.clear()
+
+    app_id = _widget_app(client, admin, "Throttle App")
+    body = {"spans": [{"kind": "ui.interaction", "name": "x"}] * 6}
+    assert client.post(f"/api/apps/{app_id}/spans", json=body).status_code == 429
+    # The budget applies only to the anonymous path.
+    assert client.post(f"/api/apps/{app_id}/spans", json=body, headers=admin).status_code == 202
+
+
+def test_metadata_only_redacts_client_free_text(client, admin):
+    """Under metadata_only, client error text is bounded and click labels —
+    which mirror on-screen user data — are redacted."""
+    _set_capture_level("metadata_only")
+    try:
+        app_id = _widget_app(client, admin, "Redact App")
+        r = client.post(f"/api/apps/{app_id}/spans", json={"spans": [
+            {"kind": "ui.interaction", "name": "John Smith — john@acme.com"},
+            {"kind": "dataset.query", "name": "orders", "status": "error",
+             "error": "E" * 500},
+        ]})
+        assert r.status_code == 202
+        rows = {s["kind"]: s for s in _wait_for_spans(app_id, 2)}
+        assert rows["ui.interaction"]["name"] == "(interaction)"
+        assert len(rows["dataset.query"]["error"]) == 200
+    finally:
+        _set_capture_level("full")
+
+
+def test_bug_report_intake_keeps_trace_context(client, admin):
+    """The intake schema must NOT strip trace_id/recent_spans (pydantic default
+    extra='ignore' made the analyzer's traced-events section dead code)."""
+    app_id = _widget_app(client, admin, "Bug Trace App")
+    r = client.post(f"/api/bug-reports/{app_id}", json={
+        "title": "Save does nothing",
+        "captured_context": {
+            "page_url": "http://x/",
+            "trace_id": TRACE_ID,
+            "recent_spans": [
+                {"kind": "ui.interaction", "name": "Save order", "status": "ok",
+                 "latency_ms": 0, "ts": 1},
+                {"kind": "dataset.query", "name": "insert_order", "status": "error",
+                 "error": "NOT NULL constraint failed", "latency_ms": 240, "ts": 2},
+            ],
+        },
+    })
+    assert r.status_code in (200, 201, 202), r.text
+
+    conn = _sqlite()
+    try:
+        raw = conn.execute(
+            "SELECT captured_context FROM bug_reports WHERE app_id = ? "
+            "ORDER BY created_at DESC LIMIT 1", (app_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    stored = json.loads(raw)
+    assert stored["trace_id"] == TRACE_ID
+    assert len(stored["recent_spans"]) == 2
+    assert stored["recent_spans"][1]["error"] == "NOT NULL constraint failed"
+
+    # And the analyzer prompt actually narrates them.
+    from src.bug_reports.prompts import build_analyzer_user_prompt
+    prompt = build_analyzer_user_prompt(
+        bug_title="t", bug_description="d", captured_context=stored,
+        files=[{"path": "src/App.tsx", "content": "x"}], version=None)
+    assert "Traced events" in prompt
+    assert "insert_order" in prompt and "NOT NULL constraint failed" in prompt
+
+
 def test_writer_survives_successive_event_loops():
     """The module-global writer outlives event loops (every TestClient in a
     pytest process starts a fresh lifespan on a fresh loop). A queue bound to

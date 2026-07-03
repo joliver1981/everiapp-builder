@@ -32,8 +32,9 @@ export {
 } from './useAppDB'
 export { reportBug, type ReportBugOptions, type ReportBugResult } from './reportBug'
 // Importing installs the fetch patch that stamps X-AIHub-Trace-Id on
-// platform-bound requests (one trace id per app session).
-export { getTraceId, installTracing } from './tracing'
+// platform-bound requests (one trace id per app session) and emits client
+// spans (dataset/app-DB calls, UI errors, interactions) to the platform.
+export { getTraceId, getRecentSpans, emitSpan, installTracing, type ClientSpan } from './tracing'
 export { BugReportButton } from './BugReportButton'
 export {
   AppErrorBoundary,

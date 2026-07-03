@@ -20,6 +20,12 @@ class CapturedContext(BaseModel):
     viewport: dict[str, int] | None = None
     console_tail: list[str] = Field(default_factory=list)
     network_errors: list[CapturedNetworkError] = Field(default_factory=list)
+    # Trace spine: the SDK's session id + recent client spans (clicks, dataset
+    # calls, errors, timings). MUST be declared — pydantic's default
+    # extra='ignore' silently strips undeclared keys, which would make the
+    # analyzer's "traced events" section dead code.
+    trace_id: str | None = Field(None, max_length=64)
+    recent_spans: list[dict] = Field(default_factory=list, max_length=100)
     extra: dict = Field(default_factory=dict)
 
 

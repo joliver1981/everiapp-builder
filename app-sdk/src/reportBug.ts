@@ -53,6 +53,20 @@ export async function reportBug(opts: ReportBugOptions): Promise<ReportBugResult
 
   const captured = snapshotCapturedContext()
   if (opts.extra) (captured as any).extra = opts.extra
+  // Trace spine: the session's trace id + the recent client spans (clicks,
+  // dataset calls, errors — with timings) so the analyzer sees WHAT HAPPENED,
+  // not just the console tail.
+  try {
+    const { getTraceId, getRecentSpans } = await import('./tracing')
+    ;(captured as any).trace_id = getTraceId()
+    // detail carries raw request bodies (dataset params, app-DB values) —
+    // real business data. The spans TABLE encrypts it behind the capture
+    // level; a bug report would store it verbatim, so strip it here. The
+    // kind/name/status/error/timing chronology is what the analyzer needs.
+    ;(captured as any).recent_spans = getRecentSpans().map(({ detail: _detail, ...s }) => s)
+  } catch {
+    /* tracing unavailable — report still goes out */
+  }
 
   let screenshot: string | null = null
   if (opts.includeScreenshot !== false) {

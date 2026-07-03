@@ -70,7 +70,10 @@ export function installBugCapture(): void {
     pushConsole('error', [`unhandledrejection: ${reason?.message ?? String(reason)}`])
   })
 
-  // fetch wrapping — only failures get recorded
+  // fetch wrapping — only failures get recorded. The tracing module's own
+  // span-flush POSTs are excluded: during a platform outage they fail every
+  // 500ms and would evict the app's REAL failing calls from this small ring.
+  const isTelemetryUrl = (url: string) => /\/api\/apps\/[^/]+\/spans$/.test(url)
   const originalFetch = window.fetch
   if (typeof originalFetch === 'function') {
     window.fetch = async (input: any, init?: RequestInit): Promise<Response> => {
@@ -79,12 +82,14 @@ export function installBugCapture(): void {
       const ts = Date.now()
       try {
         const resp = await originalFetch(input, init)
-        if (!resp.ok) {
+        if (!resp.ok && !isTelemetryUrl(url)) {
           pushNetwork({ url, method, status: resp.status, error: null, timestamp: ts })
         }
         return resp
       } catch (e: any) {
-        pushNetwork({ url, method, status: null, error: e?.message || String(e), timestamp: ts })
+        if (!isTelemetryUrl(url)) {
+          pushNetwork({ url, method, status: null, error: e?.message || String(e), timestamp: ts })
+        }
         throw e
       }
     }
