@@ -220,6 +220,27 @@ def test_fallback_on_llm_error(client, admin, provider, monkeypatch):
     assert span["status"] == "error" and "model down" in span["error"]
 
 
+def test_timeout_error_is_self_documenting(client, admin, provider, monkeypatch):
+    """A timed-out decision must name the knob (timeout_seconds) and how to
+    raise it — 'TimeoutError:' alone sent a real debugging session guessing
+    about a nonexistent 'platform execution budget'."""
+    import src.llm_compat as llm_compat
+
+    async def slow(kwargs):
+        await asyncio.sleep(3)
+        return _FakeResponse('"follow_up"')
+    monkeypatch.setattr(llm_compat, "_acompletion_raw", slow)
+
+    manifest = [dict(MANIFEST[0], timeout_seconds=1)]
+    app_id = _decision_app(client, admin, "Timeout Doc App", manifest=manifest)
+    r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {}}, headers=admin)
+    assert r.json()["source"] == "fallback"
+    span = next(s for s in _wait_spans(app_id, 1) if s["kind"] == "ai.decision")
+    assert "timed out after 1s" in span["error"]
+    assert "timeout_seconds" in span["error"]  # the knob, by name
+
+
 def test_fallback_on_schema_violation(client, admin, provider, monkeypatch):
     import src.llm_compat as llm_compat
 

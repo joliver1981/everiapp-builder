@@ -7,4 +7,4 @@ bundle or a stale backend process is visible at a glance instead of being a
 debugging session.
 """
 
-PLATFORM_VERSION = "0.5.0"
+PLATFORM_VERSION = "0.5.1"

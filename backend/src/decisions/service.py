@@ -300,6 +300,16 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
                         "provider_type": provider_type, "model": model},
         ), timeout=float(decision.timeout_seconds or DEFAULT_TIMEOUT_SECONDS))
         raw = response.choices[0].message.content or ""
+    except asyncio.TimeoutError:
+        # Self-documenting: the trace (and any AI reading it) must see WHICH
+        # knob was hit and how to change it — not a bare "TimeoutError".
+        budget = decision.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
+        msg = (f"timed out after {budget}s (this decision's timeout_seconds; "
+               f"raise it in decisions.json or via PUT /api/decisions/"
+               f"{decision.app_id}/{decision.name}, max {_TIMEOUT_MAX}s — "
+               f"or pin a faster model to the 'App decisions' purpose)")
+        await _meter(db, decision, user_id, provider_type, model, error=msg)
+        return _result(fallback, "fallback", status="error", error=msg)
     except Exception as e:
         await _meter(db, decision, user_id, provider_type, model,
                      error=f"{type(e).__name__}: {e}")
