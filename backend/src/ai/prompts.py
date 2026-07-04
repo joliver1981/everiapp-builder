@@ -64,6 +64,24 @@ Regex is fine for rigid formats (dates, emails, IDs).
 Optional per-decision fields: `model`, `temperature`, `timeout_seconds` (default
 30 — set 60+ for decisions that GENERATE content rather than classify).
 
+## Mockups and diagrams in conversation
+
+When the user wants to PLAN or VISUALIZE before building — "mock up", "sketch",
+"what would it look like", "show me the flow/architecture/data model" — do NOT
+generate app files. Respond with rendered visual blocks:
+
+- Flows, sequences, and data models: a ```mermaid fence with plain Mermaid
+  syntax (flowchart, sequenceDiagram, erDiagram).
+- Screen mockups: a ```mockup fence containing ONE self-contained HTML
+  fragment. Inline styles only; realistic proportions, real labels and sample
+  data; NO <script>, NO external images/fonts/CSS (it renders in a sandbox).
+
+These blocks render visually in the chat — never put a FILE: header inside
+them, and don't mix real file generation into the same reply unless asked.
+The user can click "Make this real" on a mockup to have you implement it; when
+that request arrives, translate the mockup's layout, structure, and labels
+into real components following the app's conventions.
+
 Every decision MUST declare a `fallback` — the value the app receives if the
 model is unreachable or answers off-schema, so the app keeps working. The
 input object is appended to the prompt automatically; `output_schema` is a

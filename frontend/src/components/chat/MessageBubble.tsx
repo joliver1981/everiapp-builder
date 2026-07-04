@@ -4,6 +4,8 @@ import type { ChatMessage, CodeRef } from '@/types'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chatStore'
 import { CodeBlock } from './CodeBlock'
+import { MermaidBlock } from './MermaidBlock'
+import { MockupBlock } from './MockupBlock'
 
 // An inline-code token that looks like an app file path + optional :line or :line-line.
 // Strict (must start `src/`, must have an extension) so ordinary inline code like
@@ -112,6 +114,16 @@ function FormattedContent({ content }: { content: string }) {
 
   segments.forEach((seg, segIdx) => {
     if (seg.kind === 'code') {
+      // Visual blocks render as visuals: diagrams and screen mockups are the
+      // conversation's deliverable, not code to collapse.
+      if (seg.language === 'mermaid') {
+        elements.push(<MermaidBlock key={`code-${segIdx}`} code={seg.code} />)
+        return
+      }
+      if (seg.language === 'mockup' || seg.language === 'svg') {
+        elements.push(<MockupBlock key={`code-${segIdx}`} language={seg.language} code={seg.code} />)
+        return
+      }
       elements.push(
         <CollapsibleCode key={`code-${segIdx}`} language={seg.language || 'plaintext'} code={seg.code} />
       )

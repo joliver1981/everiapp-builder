@@ -107,6 +107,21 @@ def test_step_without_fields_still_wizard_shaped():
     assert wizard == w
 
 
+def test_mermaid_and_mockup_blocks_stay_in_description():
+    """Visual blocks (no FILE header) must never become files AND must survive
+    into the description verbatim — the chat renders them as diagrams/mockups."""
+    content = (
+        "Here's the flow:\n```mermaid\nflowchart TD\n  A[Click] --> B[Save]\n```\n"
+        "And the screen:\n```mockup\n<div style=\"padding:8px\">Orders</div>\n```\n"
+        "Want me to build it?"
+    )
+    files, desc, wizard = parse_llm_response(content)
+    assert files == []
+    assert wizard is None
+    assert "```mermaid" in desc and "flowchart TD" in desc
+    assert "```mockup" in desc and "Orders" in desc
+
+
 def test_file_blocks_take_priority():
     content = (
         "New component:\n```tsx\n// FILE: src/Thing.tsx\nexport const T = 1\n```"
