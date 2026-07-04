@@ -99,6 +99,36 @@ function narrate(s: SpanRow): string {
 const timeOf = (s: SpanRow) =>
   s.created_at ? new Date(s.created_at + (s.created_at.endsWith('Z') ? '' : 'Z')) : new Date(0)
 
+// Story mode collapses runs of routine, successful data plumbing ("used its
+// local database — 32ms" ×9) into one line — chatter buries the story.
+type RenderItem = { type: 'span'; span: SpanRow } | { type: 'group'; key: string; spans: SpanRow[] }
+
+const GROUPABLE = new Set(['appdb.call', 'dataset.query'])
+
+function groupForStory(rows: SpanRow[]): RenderItem[] {
+  const items: RenderItem[] = []
+  let buf: SpanRow[] = []
+  const flush = () => {
+    if (buf.length >= 3) items.push({ type: 'group', key: buf[0].id, spans: buf })
+    else buf.forEach((span) => items.push({ type: 'span', span }))
+    buf = []
+  }
+  for (const s of rows) {
+    if (GROUPABLE.has(s.kind) && s.status === 'ok' && s.latency_ms < 2000) buf.push(s)
+    else { flush(); items.push({ type: 'span', span: s }) }
+  }
+  flush()
+  return items
+}
+
+function groupLabel(spans: SpanRow[]): string {
+  const kinds = new Set(spans.map((s) => s.kind))
+  const what = kinds.size === 1 && kinds.has('dataset.query')
+    ? 'asked its datasets' : 'used its local database'
+  const times = spans.map((s) => s.latency_ms)
+  return `The app ${what} — ${spans.length} quick calls (${Math.min(...times)}–${Math.max(...times)}ms)`
+}
+
 export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRequested }: {
   appId: string
   onClose: () => void
@@ -114,6 +144,7 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
   const [mode, setMode] = useState<'story' | 'timeline'>('story')
   const [loading, setLoading] = useState(false)
   const [live, setLive] = useState(true)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -369,7 +400,42 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
                 Session {traceId ? traceId.slice(0, 8) : '(untraced)'} · {rows.length} events
               </p>
               <div className="rounded-lg border border-border">
-                {rows.map((s) => (
+                {(mode === 'story'
+                  ? groupForStory(rows)
+                  : rows.map((span) => ({ type: 'span' as const, span }))
+                ).map((item) => item.type === 'group' ? (
+                  <div key={item.key}>
+                    <button
+                      onClick={() => setExpandedGroups((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(item.key)) next.delete(item.key)
+                        else next.add(item.key)
+                        return next
+                      })}
+                      className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left text-xs text-muted-foreground last:border-b-0 hover:bg-accent/50"
+                      title={expandedGroups.has(item.key)
+                        ? 'Click to collapse these routine calls back into one line'
+                        : 'Routine successful data calls, collapsed to reduce noise — click to expand them'}
+                    >
+                      <span className="w-14 shrink-0 pt-0.5 font-mono text-[10px]">
+                        {item.spans[0].created_at ? timeOf(item.spans[0]).toLocaleTimeString() : ''}
+                      </span>
+                      <span className="leading-5">
+                        {expandedGroups.has(item.key) ? '▾' : '▸'} {groupLabel(item.spans)}
+                      </span>
+                    </button>
+                    {expandedGroups.has(item.key) && item.spans.map(renderSpanRow)}
+                  </div>
+                ) : renderSpanRow(item.span))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </>
+  )
+
+  function renderSpanRow(s: SpanRow) {
+    return (
                   <div
                     key={s.id}
                     className={cn(
@@ -419,13 +485,8 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
                       </button>
                     )}
                   </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </>
-  )
+    )
+  }
 
   if (variant === 'panel') {
     return <div className="flex h-full flex-col overflow-hidden bg-card">{content}</div>

@@ -258,7 +258,7 @@ class AIService:
         await db.flush()
 
         # Build messages for LLM (editor_context focuses the model on what the user is viewing)
-        messages = await self._build_messages(db, conversation, app_id, editor_context=editor_context)
+        messages = await self._build_messages(db, conversation, app_id, editor_context=editor_context, user_id=user_id)
 
         # Get provider config — use selected provider or fall back to default
         if provider_id:
@@ -525,7 +525,7 @@ class AIService:
                 msg = "AI provider authentication failed. Check your API key in Admin > AI Providers."
             yield {"type": "error", "data": msg}
 
-    async def _build_messages(self, db: AsyncSession, conversation: Conversation, app_id: str, editor_context: dict | None = None) -> list[dict]:
+    async def _build_messages(self, db: AsyncSession, conversation: Conversation, app_id: str, editor_context: dict | None = None, user_id: str | None = None) -> list[dict]:
         """Build the message list for the LLM call.
 
         `editor_context` (from the in-code overlay) is injected as a focused system message so
@@ -545,6 +545,23 @@ class AIService:
                 })
         except Exception:
             pass
+
+        # This developer's personal "skills" — standing preferences ("when using
+        # SQLite, enable WAL", "always add loading states") that apply to every
+        # app THIS user builds. Org-wide standards ride custom_system_prompt above.
+        if user_id:
+            try:
+                from ..auth.models import User
+                dev = await db.get(User, user_id)
+                personal = (getattr(dev, "dev_standards", "") or "").strip()
+                if personal:
+                    messages.append({
+                        "role": "system",
+                        "content": "## This developer's standing preferences (apply "
+                                   "unless they conflict with platform rules)\n" + personal[:8000],
+                    })
+            except Exception:
+                pass
 
         # Teach the [[jump:...]] directive as its own system message so it stays active
         # even when an admin has overridden the main system_prompt in the prompt registry.
@@ -669,7 +686,7 @@ class AIService:
         prev_sig = _error_signature(result.errors)
         for iteration in range(1, max_iters + 1):
             # Build a fix request: original conversation context + concrete errors.
-            messages = await self._build_messages(db, conversation, app_id)
+            messages = await self._build_messages(db, conversation, app_id, user_id=user_id)
             messages.append({"role": "assistant", "content": last_response})
             _errors_block = errors_to_prompt_block(result.errors)
             messages.append({"role": "user", "content": _errors_block})

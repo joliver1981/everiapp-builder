@@ -11,6 +11,7 @@ import {
   Server,
   Store,
   LogOut,
+  BookOpen,
   Sparkles,
   Database,
   Table,
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
+import { DevSkillsModal } from '@/components/DevSkillsModal'
 import type { Role } from '@/types'
 
 interface NavItem {
@@ -54,6 +56,7 @@ export function Sidebar() {
   // or a stale backend process (restart) — surfaced here so nobody debugs a
   // "missing feature" that's really an old build.
   const [apiVersion, setApiVersion] = useState<string | null>(null)
+  const [showSkills, setShowSkills] = useState(false)
   useEffect(() => {
     fetch('/api/health')
       .then((r) => (r.ok ? r.json() : null))
@@ -113,15 +116,27 @@ export function Sidebar() {
             <p className="truncate text-sm font-medium">{user?.display_name}</p>
             <p className="truncate text-xs text-muted-foreground capitalize">{user?.role}</p>
           </div>
-          <button
-            onClick={() => logout()}
-            className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Sign out"
-          >
-            <LogOut size={18} />
-          </button>
+          <div className="flex items-center">
+            {(userRole === 'admin' || userRole === 'developer') && (
+              <button
+                onClick={() => setShowSkills(true)}
+                className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title="My developer skills — standing preferences the AI applies to every app you build (e.g. 'always enable WAL on SQLite'). Click to view and edit."
+              >
+                <BookOpen size={18} />
+              </button>
+            )}
+            <button
+              onClick={() => logout()}
+              className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title="Sign out"
+            >
+              <LogOut size={18} />
+            </button>
+          </div>
         </div>
       </div>
+      {showSkills && <DevSkillsModal onClose={() => setShowSkills(false)} />}
     </aside>
   )
 }

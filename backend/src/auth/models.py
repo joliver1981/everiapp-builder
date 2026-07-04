@@ -18,6 +18,10 @@ class User(Base):
     # users. Format: pbkdf2_sha256$iters$salt$hash (see auth/passwords.py).
     password_hash: Mapped[str] = mapped_column(String(255), default="", server_default="")
     ad_groups: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of AD group names
+    # This developer's personal "skills" — standing preferences injected into
+    # every generation turn they run (org-wide standards live in the
+    # custom_system_prompt platform setting, Admin → Platform).
+    dev_standards: Mapped[str] = mapped_column(Text, default="", server_default="")
     # Which IdP authenticated this user ('mock'/'local'/'ldap') + the stable
     # external id from that IdP. Lets repeat logins update instead of duplicate.
     auth_provider: Mapped[str] = mapped_column(String(20), default="mock")

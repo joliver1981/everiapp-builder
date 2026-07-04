@@ -73,6 +73,8 @@ _MISSING_COLUMN_MIGRATIONS = [
     ("llm_usage", "span_id",                  "VARCHAR(36)"),
     # Per-decision LLM timeout before the fallback engages
     ("app_decisions", "timeout_seconds",      "INTEGER DEFAULT 30"),
+    # Personal developer "skills" injected into that user's generation turns
+    ("users", "dev_standards",                "TEXT DEFAULT ''"),
 ]
 
 

@@ -104,6 +104,26 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
     return {"ok": True}
 
 
+@router.get("/me/dev-standards")
+async def get_dev_standards(user: User = Depends(get_current_user)):
+    """This developer's personal 'skills' — standing preferences injected into
+    every generation turn they run."""
+    return {"dev_standards": user.dev_standards or ""}
+
+
+@router.put("/me/dev-standards")
+async def put_dev_standards(
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    text = str(body.get("dev_standards", ""))[:8000]
+    user.dev_standards = text
+    db.add(user)
+    await db.commit()
+    return {"dev_standards": text}
+
+
 @router.get("/me")
 async def get_me(user: User = Depends(get_current_user)):
     groups = json.loads(user.ad_groups) if user.ad_groups else []
