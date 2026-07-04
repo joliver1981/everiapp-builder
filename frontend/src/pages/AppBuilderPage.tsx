@@ -852,7 +852,9 @@ export function AppBuilderPage() {
                 ? 'bg-success/10 text-success'
                 : 'text-muted-foreground hover:text-foreground'
             )}
-            title="AI Toggle — embedded AI assistant for end users"
+            title={currentApp.ai_toggle_enabled
+              ? 'AI assistant is ON for this app — end users get an embedded AI chat that can read the app\'s data and trigger its actions. Click to turn OFF.'
+              : 'AI assistant is OFF. Click to add an embedded AI chat to this app (end users can ask questions about its data and trigger its actions).'}
           >
             {currentApp.ai_toggle_enabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
             AI
@@ -871,7 +873,9 @@ export function AppBuilderPage() {
                 ? 'bg-success/10 text-success'
                 : 'text-muted-foreground hover:text-foreground'
             )}
-            title="Bug Reporter — floating bug button + AI triage"
+            title={currentApp.bug_widget_enabled
+              ? 'Bug Reporter is ON — the deployed app shows a floating red bug button; reports arrive with a screenshot, console/network context, and the traced events, then AI triages them (Admin → Bug Reports). Click to turn OFF.'
+              : 'Bug Reporter is OFF. Click to add a floating bug-report button to the deployed app — reports arrive with a screenshot, console/network context, and the traced events, then AI triages them. Also allows the app to send trace telemetry without a signed-in user.'}
           >
             <Bug size={14} />
             Bugs
@@ -939,7 +943,9 @@ export function AppBuilderPage() {
                 ? 'bg-primary/10 text-primary'
                 : 'text-muted-foreground hover:text-foreground'
             )}
-            title="Watch the AI write code live in a side panel"
+            title={liveCodeEnabled
+              ? 'Live code view is ON — a side panel streams each file as the AI writes it. Click to turn OFF.'
+              : 'Click to open a side panel that streams code live, file by file, while the AI builds or fixes the app.'}
           >
             <Radio size={14} />
             Live
@@ -955,7 +961,9 @@ export function AppBuilderPage() {
                 ? 'bg-primary/10 text-primary'
                 : 'text-muted-foreground hover:text-foreground'
             )}
-            title="Inspector — watch what the running app does while you test (plain-English trace + AI diagnosis)"
+            title={rightPanel === 'inspector'
+              ? 'Inspector is open. Click to close it.'
+              : 'Click to open the Inspector beside the Preview: a live, plain-English trace of everything the running app does (clicks, data calls, AI decisions, errors). Issues surface as chips — click one for an AI diagnosis, then "Fix it" to send the fix to the builder.'}
           >
             <Activity size={14} />
             Inspector

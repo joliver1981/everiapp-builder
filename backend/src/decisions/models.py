@@ -42,6 +42,10 @@ class AppDecision(Base):
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     temperature: Mapped[float] = mapped_column(Float, default=0.0)
     cache_ttl_seconds: Mapped[int] = mapped_column(Integer, default=0)  # 0 = off
+    # LLM budget per invocation before the fallback engages. Generative
+    # decisions (produce content, not just classify) need far more than a
+    # classifier — a big model writing a test scenario can take 20-60s.
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=30)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

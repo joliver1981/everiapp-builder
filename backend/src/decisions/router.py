@@ -28,6 +28,7 @@ class DecisionUpdate(BaseModel):
     model: str | None = None
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     cache_ttl_seconds: int | None = Field(None, ge=0, le=30 * 86400)
+    timeout_seconds: int | None = Field(None, ge=1, le=120)
 
 
 def _to_response(d) -> dict:
@@ -39,6 +40,7 @@ def _to_response(d) -> dict:
         "fallback": json.loads(d.fallback_json),
         "model": d.model, "temperature": d.temperature,
         "cache_ttl_seconds": d.cache_ttl_seconds,
+        "timeout_seconds": d.timeout_seconds,
         "updated_at": d.updated_at.isoformat() if d.updated_at else None,
     }
 
@@ -111,5 +113,6 @@ async def update_decision(
     await decisions_service.update_prompt(
         db, decision, prompt=body.prompt, model=body.model,
         temperature=body.temperature, cache_ttl_seconds=body.cache_ttl_seconds,
+        timeout_seconds=body.timeout_seconds,
     )
     return _to_response(decision)

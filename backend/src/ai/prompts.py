@@ -61,6 +61,9 @@ Regex is fine for rigid formats (dates, emails, IDs).
 }]
 ```
 
+Optional per-decision fields: `model`, `temperature`, `timeout_seconds` (default
+30 — set 60+ for decisions that GENERATE content rather than classify).
+
 Every decision MUST declare a `fallback` — the value the app receives if the
 model is unreachable or answers off-schema, so the app keeps working. The
 input object is appended to the prompt automatically; `output_schema` is a

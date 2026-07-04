@@ -23,7 +23,11 @@ from .models import AppDecision, DecisionCache
 
 logger = logging.getLogger(__name__)
 
-LLM_TIMEOUT_SECONDS = 6.0
+# Default per-invocation LLM budget; decisions can override (manifest/PUT,
+# clamped to _TIMEOUT_MAX). 6s proved far too tight in real testing — a big
+# model *generating* content (not just classifying) routinely needs 20-60s.
+DEFAULT_TIMEOUT_SECONDS = 30
+_TIMEOUT_MAX = 120
 _INPUT_MAX_CHARS = 20_000
 _NAME_MAX = 100
 
@@ -92,6 +96,8 @@ async def upsert_from_manifest(db: AsyncSession, app_id: str, entries: list[dict
                 row.temperature = float(entry["temperature"])
             if isinstance(entry.get("cache_ttl_seconds"), int):
                 row.cache_ttl_seconds = max(0, entry["cache_ttl_seconds"])
+            if isinstance(entry.get("timeout_seconds"), int):
+                row.timeout_seconds = min(max(1, entry["timeout_seconds"]), _TIMEOUT_MAX)
         # Contract fields stay generator-owned — but never regress to nothing
         # when a later manifest omits the schema.
         row.description = entry.get("description", row.description or "")[:300]
@@ -149,7 +155,8 @@ async def get_decision(db: AsyncSession, app_id: str, name: str) -> AppDecision 
 
 async def update_prompt(db: AsyncSession, decision: AppDecision, *, prompt: str | None,
                         model: str | None, temperature: float | None,
-                        cache_ttl_seconds: int | None) -> None:
+                        cache_ttl_seconds: int | None,
+                        timeout_seconds: int | None = None) -> None:
     """Prompt-as-data: takes effect on the NEXT invocation, zero rebuild.
     Cache keys include the prompt hash, so edits invalidate implicitly."""
     if prompt is not None and prompt.strip():
@@ -160,6 +167,8 @@ async def update_prompt(db: AsyncSession, decision: AppDecision, *, prompt: str 
         decision.temperature = temperature
     if cache_ttl_seconds is not None:
         decision.cache_ttl_seconds = max(0, cache_ttl_seconds)
+    if timeout_seconds is not None:
+        decision.timeout_seconds = min(max(1, timeout_seconds), _TIMEOUT_MAX)
     await db.commit()
 
 
@@ -289,7 +298,7 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
                         "purpose": "decision", "name": decision.name,
                         "parent_span_id": decision_span_id,
                         "provider_type": provider_type, "model": model},
-        ), timeout=LLM_TIMEOUT_SECONDS)
+        ), timeout=float(decision.timeout_seconds or DEFAULT_TIMEOUT_SECONDS))
         raw = response.choices[0].message.content or ""
     except Exception as e:
         await _meter(db, decision, user_id, provider_type, model,

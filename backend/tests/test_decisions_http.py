@@ -303,7 +303,7 @@ def test_manifest_resave_preserves_admin_knobs(client, admin, provider):
     app_id = _decision_app(client, admin, "Knobs App", manifest=manifest)
     client.put(f"/api/decisions/{app_id}/classify_question",
                json={"model": "claude-haiku-4-5-20251001", "temperature": 0.1,
-                     "cache_ttl_seconds": 900}, headers=admin)
+                     "cache_ttl_seconds": 900, "timeout_seconds": 45}, headers=admin)
 
     from src.ai.code_parser import GeneratedFile
     from src.ai.service import ai_service
@@ -319,6 +319,7 @@ def test_manifest_resave_preserves_admin_knobs(client, admin, provider):
     assert d["model"] == "claude-haiku-4-5-20251001"
     assert d["temperature"] == 0.1
     assert d["cache_ttl_seconds"] == 900
+    assert d["timeout_seconds"] == 45
 
 
 def test_invoke_rate_limited(client, admin, provider, fake_llm, monkeypatch):

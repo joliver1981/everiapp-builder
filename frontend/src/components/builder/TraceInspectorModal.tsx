@@ -293,7 +293,7 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
                       ? 'bg-destructive/10 text-destructive hover:bg-destructive/20'
                       : 'bg-warning/10 text-amber-600 hover:bg-warning/20',
                   )}
-                  title="Click to have AI diagnose this from the trace + source"
+                  title="Step 1: click to run an AI diagnosis of this issue (reads the trace and the app's source). Step 2: the diagnosis card gets a 'Fix it' button that sends the fix to the builder chat."
                 >
                   {diagnosing === i.key
                     ? <Loader2 size={11} className="animate-spin" />
@@ -384,7 +384,7 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
                       <AlertCircle size={13} className="mt-0.5 shrink-0 text-destructive" />
                     )}
                     {mode === 'story' ? (
-                      <span className={cn('leading-5', s.status === 'error' && 'text-destructive')}>
+                      <span className={cn('flex-1 leading-5', s.status === 'error' && 'text-destructive')}>
                         {narrate(s)}
                       </span>
                     ) : (
@@ -400,6 +400,23 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
                           <span>{s.latency_ms}ms</span>
                         </span>
                       </span>
+                    )}
+                    {s.status === 'error'
+                      && s.purpose !== 'copilot_diagnose' && s.purpose !== 'bug_analysis' && (
+                      <button
+                        onClick={() => explain({
+                          key: `row:${s.id}`, label: narrate(s).slice(0, 140),
+                          count: 1, severity: 'error',
+                        })}
+                        disabled={!!diagnosing}
+                        className="flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
+                        title="Run an AI diagnosis of this failure (reads the trace and the app's source); the result card includes a 'Fix it' button"
+                      >
+                        {diagnosing === `row:${s.id}`
+                          ? <Loader2 size={10} className="animate-spin" />
+                          : <Sparkles size={10} />}
+                        Diagnose
+                      </button>
                     )}
                   </div>
                 ))}

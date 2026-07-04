@@ -71,6 +71,8 @@ _MISSING_COLUMN_MIGRATIONS = [
     # Trace spine: join llm_usage rows to ai_spans / a request's trace
     ("llm_usage", "trace_id",                 "VARCHAR(64)"),
     ("llm_usage", "span_id",                  "VARCHAR(36)"),
+    # Per-decision LLM timeout before the fallback engages
+    ("app_decisions", "timeout_seconds",      "INTEGER DEFAULT 30"),
 ]
 
 
