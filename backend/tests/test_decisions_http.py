@@ -131,8 +131,11 @@ class _FakeUsage:
 
 
 class _FakeResponse:
-    def __init__(self, content):
-        self.choices = [type("C", (), {"message": type("M", (), {"content": content})()})()]
+    def __init__(self, content, finish_reason="stop"):
+        self.choices = [type("C", (), {
+            "message": type("M", (), {"content": content})(),
+            "finish_reason": finish_reason,
+        })()]
         self.usage = _FakeUsage()
 
 
@@ -299,6 +302,38 @@ def test_prompt_edit_applies_immediately_and_busts_cache(client, admin, provider
     asyncio.run(_resave())
     d = client.get(f"/api/decisions/{app_id}", headers=admin).json()[0]
     assert d["prompt_template"] == "NEW TUNED PROMPT v2"
+
+
+def test_fenced_json_answer_accepted(client, admin, provider, monkeypatch):
+    """Models love ```json fences despite instructions — strip and parse."""
+    import src.llm_compat as llm_compat
+
+    async def fenced(kwargs):
+        return _FakeResponse('```json\n"follow_up"\n```')
+    monkeypatch.setattr(llm_compat, "_acompletion_raw", fenced)
+
+    app_id = _decision_app(client, admin, "Fenced App")
+    r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {}}, headers=admin)
+    assert r.json()["value"] == "follow_up" and r.json()["source"] == "llm"
+
+
+def test_truncated_output_error_is_self_documenting(client, admin, provider, monkeypatch):
+    """The real-world failure: output cut off at max_tokens mid-JSON. The
+    span must say 'truncated' and name the remedy — not just 'unparseable'."""
+    import src.llm_compat as llm_compat
+
+    async def truncated(kwargs):
+        return _FakeResponse('```json\n{"system_prompts": ["You are', finish_reason="length")
+    monkeypatch.setattr(llm_compat, "_acompletion_raw", truncated)
+
+    app_id = _decision_app(client, admin, "Truncated App")
+    r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {}}, headers=admin)
+    assert r.json()["source"] == "fallback"
+    span = next(s for s in _wait_spans(app_id, 1) if s["kind"] == "ai.decision")
+    assert "truncated" in span["error"]
+    assert "reduce the requested volume" in span["error"]
 
 
 def test_bare_enum_answer_accepted(client, admin, provider, monkeypatch):

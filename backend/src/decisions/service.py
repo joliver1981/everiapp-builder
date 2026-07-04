@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 # model *generating* content (not just classifying) routinely needs 20-60s.
 DEFAULT_TIMEOUT_SECONDS = 30
 _TIMEOUT_MAX = 120
+# Output ceiling per invocation. 1024 proved too small in real testing —
+# generate-style decisions (multiple prompts/arrays) got truncated mid-JSON
+# and burned their fallback on an "unparseable" answer.
+DECISION_MAX_TOKENS = 4096
 _INPUT_MAX_CHARS = 20_000
 _NAME_MAX = 100
 
@@ -292,7 +296,7 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
             messages=messages,
             api_key=provider_config["api_key"],
             base_url=provider_config.get("base_url"),
-            max_tokens=1024,
+            max_tokens=DECISION_MAX_TOKENS,
             temperature=decision.temperature,
             aihub_span={"app_id": decision.app_id, "user_id": user_id,
                         "purpose": "decision", "name": decision.name,
@@ -320,6 +324,14 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
 
     value, ok = _parse_output(raw, decision.output_schema_json)
     if not ok:
+        # Self-documenting: a truncated answer is a sizing problem, not a
+        # model-quality problem — say which and what to change.
+        finish = getattr(response.choices[0], "finish_reason", None)
+        if finish == "length":
+            return _result(fallback, "fallback", status="error",
+                           error=f"model output truncated at {DECISION_MAX_TOKENS} tokens "
+                                 f"mid-JSON — this decision asks for too much output; "
+                                 f"reduce the requested volume in its prompt")
         return _result(fallback, "fallback", status="error",
                        error=f"unparseable model output: {raw[:200]!r}")
     if not _validate_output(value, decision.output_schema_json):
