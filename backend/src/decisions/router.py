@@ -65,6 +65,24 @@ async def invoke_decision(
     return await decisions_service.invoke(db, decision, body.input, user.id)
 
 
+@router.post("/{app_id}/sync")
+async def sync_decisions(
+    app_id: str,
+    user: User = Depends(get_current_user_flexible),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-sync the registry from the draft's decisions.json — the manual
+    escape hatch for registry drift (also runs automatically on every
+    preview start)."""
+    if user.role not in ("admin", "developer"):
+        raise HTTPException(status_code=403, detail="Developer or admin role required")
+    app = await apps_service.get_app(db, app_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    written, errors = await decisions_service.sync_from_draft(db, app_id)
+    return {"registered": written, "errors": errors}
+
+
 @router.get("/{app_id}")
 async def list_decisions(
     app_id: str,

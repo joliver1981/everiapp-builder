@@ -119,6 +119,25 @@ async def ingest_spans(
     return {"accepted": accepted}
 
 
+@router.delete("/{app_id}/spans")
+async def clear_app_spans(
+    app_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Clear the app's trace — a fresh slate before a test session."""
+    app = await apps_service.get_app(db, app_id)
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    if user.role not in ("admin", "developer"):
+        raise HTTPException(status_code=403, detail="Developer or admin role required")
+    from sqlalchemy import delete as sql_delete
+    from .models import AISpan
+    result = await db.execute(sql_delete(AISpan).where(AISpan.app_id == app_id))
+    await db.commit()
+    return {"deleted": result.rowcount or 0}
+
+
 @router.get("/{app_id}/spans")
 async def get_app_spans(
     app_id: str,

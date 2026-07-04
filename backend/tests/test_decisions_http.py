@@ -334,6 +334,40 @@ def test_invoke_rate_limited(client, admin, provider, fake_llm, monkeypatch):
     rate_limit.decision_limiter._buckets.clear()
 
 
+def test_sync_endpoint_heals_registry_drift(client, admin, provider):
+    """The drift found in real testing: manifest on disk, registry empty
+    (written under an older backend). POST /sync re-registers from disk."""
+    app_id = client.post("/api/apps", json={"name": "Drift App"}, headers=admin).json()["id"]
+    draft = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
+    draft.mkdir(parents=True, exist_ok=True)
+    (draft / "decisions.json").write_text(json.dumps(MANIFEST), encoding="utf-8")
+
+    assert client.get(f"/api/decisions/{app_id}", headers=admin).json() == []
+    r = client.post(f"/api/decisions/{app_id}/sync", headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"registered": ["classify_question"], "errors": []}
+    assert [d["name"] for d in client.get(f"/api/decisions/{app_id}", headers=admin).json()] \
+        == ["classify_question"]
+
+    # Preview start runs the same sync automatically (fresh app, src/ variant).
+    app2 = client.post("/api/apps", json={"name": "Drift App 2"}, headers=admin).json()["id"]
+    draft2 = Path(settings.app_data_dir) / app2 / "draft" / "frontend" / "src"
+    draft2.mkdir(parents=True, exist_ok=True)
+    (draft2 / "decisions.json").write_text(json.dumps(MANIFEST), encoding="utf-8")
+    import src.runtime.manager as rt
+
+    async def fake_start(app_id, source="draft"):
+        return None
+    orig = rt.runtime_manager.start_app
+    rt.runtime_manager.start_app = fake_start
+    try:
+        assert client.post(f"/api/apps/{app2}/runtime/start", headers=admin).status_code == 200
+    finally:
+        rt.runtime_manager.start_app = orig
+    assert [d["name"] for d in client.get(f"/api/decisions/{app2}", headers=admin).json()] \
+        == ["classify_question"]
+
+
 def test_auth_and_unknowns(client, admin, provider):
     app_id = _decision_app(client, admin, "Auth App")
     url = f"/api/decisions/{app_id}/classify_question/invoke"

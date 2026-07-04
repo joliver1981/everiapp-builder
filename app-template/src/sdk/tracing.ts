@@ -82,6 +82,7 @@ const buffer: Omit<ClientSpan, 'ts'>[] = []
 const ring: ClientSpan[] = []
 let flushTimer: ReturnType<typeof setInterval> | null = null
 let originalFetch: typeof fetch | null = null
+let warnedAuthOnce = false
 
 /** Recent spans (newest last) — attached to bug reports. */
 export function getRecentSpans(): ClientSpan[] {
@@ -127,6 +128,16 @@ function flushSpans(): void {
       headers,
       credentials: 'include',
       body: JSON.stringify({ spans }),
+    }).then((resp) => {
+      if ((resp.status === 401 || resp.status === 403) && !warnedAuthOnce) {
+        warnedAuthOnce = true
+        // A silently frozen trace is undebuggable — say why, once.
+        console.warn(
+          `[AIHub SDK] Trace upload rejected (HTTP ${resp.status}) — the preview's auth token ` +
+          'likely expired. Reload the preview to resume tracing, or enable the bug widget ' +
+          'to allow tokenless telemetry for this app.',
+        )
+      }
     }).catch(() => {
       /* best-effort; dropped on failure */
     })

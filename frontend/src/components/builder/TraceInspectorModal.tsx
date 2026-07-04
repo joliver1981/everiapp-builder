@@ -6,7 +6,7 @@
  * Metadata only — payload viewing arrives with the audited decrypt path.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, AlertCircle, Loader2, RefreshCw, Sparkles, Wrench, X } from 'lucide-react'
+import { Activity, AlertCircle, Loader2, RefreshCw, Sparkles, Trash2, Wrench, X } from 'lucide-react'
 import { apiClient } from '@/api/client'
 import { useChatStore } from '@/stores/chatStore'
 import { cn } from '@/lib/utils'
@@ -256,6 +256,22 @@ export function TraceInspectorModal({ appId, onClose, variant = 'modal', onFixRe
             <button onClick={() => load()} title="Refresh"
                     className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
               {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            </button>
+            <button
+              onClick={async () => {
+                if (!confirm('Clear this app\'s entire trace? This deletes all recorded events.')) return
+                try {
+                  await apiClient.delete(`/apps/${appId}/spans`)
+                  setDiagnosis(null)
+                  setSpans([])
+                } catch (e: any) {
+                  setError(e.message)
+                }
+              }}
+              title="Clear the trace (deletes all recorded events for this app)"
+              className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 size={14} />
             </button>
             <button onClick={onClose} className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
               <X size={16} />

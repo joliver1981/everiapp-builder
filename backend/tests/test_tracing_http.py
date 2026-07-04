@@ -450,6 +450,19 @@ def test_writer_survives_successive_event_loops():
     assert [r["id"] for r in _spans("loop-rebind-app")] == ["span-loop-2"]
 
 
+def test_clear_trace(client, admin, plain_user):
+    app_id = _widget_app(client, admin, "Clear Trace App")
+    client.post(f"/api/apps/{app_id}/spans", json={"spans": [
+        {"kind": "ui.error", "name": "boom", "status": "error"}]})
+    _wait_for_spans(app_id, 1)
+
+    assert client.delete(f"/api/apps/{app_id}/spans", headers=plain_user).status_code == 403
+    r = client.delete(f"/api/apps/{app_id}/spans", headers=admin)
+    assert r.status_code == 200 and r.json()["deleted"] >= 1
+    assert _spans(app_id) == []
+    assert client.delete("/api/apps/no-such/spans", headers=admin).status_code == 404
+
+
 def test_spans_endpoint_rejects_negative_limit(client, admin):
     r = client.get("/api/apps/whatever/spans?limit=-1", headers=admin)
     assert r.status_code == 422  # ge=1 validation, before any DB work

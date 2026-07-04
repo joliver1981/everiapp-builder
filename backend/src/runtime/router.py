@@ -1,5 +1,8 @@
 """Runtime router — start/stop apps and proxy all traffic to running Vite dev servers."""
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,6 +57,22 @@ async def start_app(
         raise HTTPException(status_code=404, detail="App not found")
 
     source = body.source if body else "draft"
+
+    # Self-heal the decision registry from the draft manifest on every preview
+    # start — best-effort; a bad manifest must never block the preview. (The
+    # generation hook only fires on turns that re-emit decisions.json, so a
+    # manifest written under an older backend process would otherwise drift
+    # and every aiDecide would 404.)
+    if source == "draft":
+        try:
+            from ..decisions.service import sync_from_draft
+            _written, sync_errors = await sync_from_draft(db, app_id)
+            if sync_errors:
+                logger.warning("decision sync for %s rejected entries: %s",
+                               app_id, "; ".join(sync_errors))
+        except Exception:
+            logger.exception("decision sync on start failed for %s (non-fatal)", app_id)
+
     proc = await runtime_manager.start_app(app_id, source)
     return _proc_to_response(app_id, proc)
 

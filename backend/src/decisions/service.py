@@ -103,6 +103,29 @@ async def upsert_from_manifest(db: AsyncSession, app_id: str, entries: list[dict
     return written, errors
 
 
+async def sync_from_draft(db: AsyncSession, app_id: str) -> tuple[list[str], list[str]]:
+    """Read the draft's decisions.json from disk and upsert it into the
+    registry. The generation hook only fires on turns that RE-EMIT the
+    manifest — an app whose manifest landed under an older backend process
+    (before the hook/tables existed) drifts silently and every aiDecide 404s.
+    Called on every preview start so the registry self-heals."""
+    import json as _json
+    from pathlib import Path
+    from ..config import settings
+
+    base = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
+    for candidate in (base / "decisions.json", base / "src" / "decisions.json"):
+        if candidate.exists():
+            try:
+                entries = _json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                return [], [f"decisions.json unreadable: {e}"]
+            if not isinstance(entries, list):
+                return [], ["decisions.json must be a JSON array"]
+            return await upsert_from_manifest(db, app_id, entries)
+    return [], []
+
+
 async def purge_expired_cache(db: AsyncSession) -> int:
     """Delete expired cache rows platform-wide (called by the janitor loop;
     invoke() also purges per-decision opportunistically)."""
