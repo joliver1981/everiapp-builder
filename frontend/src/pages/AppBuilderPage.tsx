@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   MessageSquare,
@@ -167,6 +167,23 @@ export function AppBuilderPage() {
   const token = useAuthStore(() => apiClient.getToken())
   const user = useAuthStore((s) => s.user)
 
+  // The Preview iframe's auth rides in an `access_token` cookie scoped to
+  // /apps (same transport as the App Viewer — see AppViewerPage) so that a
+  // refreshed token reaches any LATER iframe navigation (retry-page heal,
+  // HMR reload) without ever changing the iframe src — a rotating token in
+  // src navigates the iframe and hard-resets the running preview mid-use.
+  // Read apiClient.getToken() DIRECTLY, not via the `token` store selector:
+  // zustand only re-runs selectors when the STORE changes, and the token
+  // lives outside the store (apiClient), so the selector serves a frozen —
+  // eventually expired — value long after apiClient refreshed. An expired
+  // cookie is discarded by the proxy and the app boots unauthenticated
+  // ("app-db migrate failed (401)"). Re-set on every render.
+  const liveToken = apiClient.getToken()
+  if (liveToken) {
+    document.cookie = `access_token=${liveToken}; path=/apps; SameSite=Lax` +
+      (window.location.protocol === 'https:' ? '; Secure' : '')
+  }
+
   const [activePanel, setActivePanel] = useState<Panel>('chat')
   const [rightPanel, setRightPanel] = useState<RightPanel>('none')
   // Drag-to-resize state for the right panel (persisted per panel group).
@@ -317,6 +334,27 @@ export function AppBuilderPage() {
   const [runtimePhase, setRuntimePhase] = useState<string | null>(null)
   const [runtimePhaseDetail, setRuntimePhaseDetail] = useState<string | null>(null)
   const [runtimePhaseElapsed, setRuntimePhaseElapsed] = useState<number | null>(null)
+
+  // The iframe URL, PINNED per mount. Two hard constraints meet here:
+  //  1. The src must NEVER change while the iframe is mounted — React writes a
+  //     changed src onto the live element and the browser navigates it, hard-
+  //     resetting the running app (this happened on every token rotation).
+  //  2. The access_token cookie alone isn't a reliable transport: cookies are
+  //     host-scoped, so browsing the builder via 127.0.0.1/LAN IP while the
+  //     dev iframe targets localhost:8800 silently drops it → the proxy
+  //     injects no token → every SDK call in the app 401s.
+  // So the token ALSO rides in the query, but read at MOUNT time only (deps
+  // exclude it deliberately). It's always fresh: the iframe only mounts right
+  // after a successful (authenticated) /runtime/status round-trip. On later
+  // in-place reloads (retry page heal, HMR) the every-render cookie — which
+  // the proxy prefers over the query — supplies a current token.
+  const previewSrc = useMemo(() => {
+    if (!currentApp) return ''
+    const tok = apiClient.getToken()
+    return `${import.meta.env.DEV ? 'http://localhost:8800' : ''}/apps/${currentApp.id}/` +
+      (tok ? `?__aihub_token=${encodeURIComponent(tok)}` : '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- token intentionally unpinned: see above
+  }, [previewKey, currentApp?.id])
 
   // Delete state
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -739,7 +777,10 @@ export function AppBuilderPage() {
     if (activePanel === 'preview' && currentApp) {
       apiClient.get<RuntimeStatusResp>(`/apps/${currentApp.id}/runtime/status`)
         .then(applyRuntimeResp)
-        .catch(() => setRuntimeStatus('stopped'))
+        // On a FAILED check keep the last known state: downgrading to 'stopped'
+        // would unmount a healthy running iframe (full app reload) over a
+        // transient network/backend blip. The pollers re-sync the truth.
+        .catch(() => { /* keep current state */ })
     }
   }, [activePanel, currentApp])
 
@@ -755,6 +796,24 @@ export function AppBuilderPage() {
         /* transient — keep polling */
       }
     }, 1500)
+    return () => clearInterval(id)
+  }, [currentApp, runtimeStatus])
+
+  // Once running, keep a slow heartbeat so a runtime that dies (orphaned Vite
+  // crash, external kill) surfaces as Error/Stopped with a Retry button instead
+  // of a stale "Running" toolbar over a dead iframe. applyRuntimeResp only bumps
+  // the iframe key on a stopped/starting -> running TRANSITION, so this steady
+  // 'running' poll never tears down a healthy preview.
+  useEffect(() => {
+    if (!currentApp || runtimeStatus !== 'running') return
+    const id = setInterval(async () => {
+      try {
+        const s = await apiClient.get<RuntimeStatusResp>(`/apps/${currentApp.id}/runtime/status`)
+        applyRuntimeResp(s)
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 10000)
     return () => clearInterval(id)
   }, [currentApp, runtimeStatus])
 
@@ -1291,12 +1350,13 @@ export function AppBuilderPage() {
 
               {/* Preview content — served through the platform proxy (/apps/{id}/), NOT the raw
                   Vite port, so the runtime proxy injects the SDK globals (window.__AIHUB_APP_ID__ /
-                  __AIHUB_TOKEN__) and the app is same-origin with /api (useDataset etc. work). The
-                  dev's token rides in the query param (iframe nav can't send an auth header). */}
+                  __AIHUB_TOKEN__) and the app is same-origin with /api (useDataset etc. work).
+                  previewSrc is pinned per mount (see its useMemo) — a LIVE token in this src
+                  navigates the iframe on every rotation and hard-resets the running app. */}
               {runtimeStatus === 'running' && runtimePort ? (
                 <iframe
                   key={previewKey}
-                  src={`${import.meta.env.DEV ? 'http://localhost:8800' : ''}/apps/${currentApp.id}/?__aihub_token=${encodeURIComponent(token || '')}`}
+                  src={previewSrc}
                   className="flex-1 border-0"
                   title="App Preview"
                 />

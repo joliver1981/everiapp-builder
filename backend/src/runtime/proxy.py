@@ -27,6 +27,94 @@ async def close_client() -> None:
         _http_client = None
 
 
+def _frame_ancestors_value() -> str:
+    """CSP frame-ancestors for preview responses. Declaring it makes
+    SecurityHeadersMiddleware skip X-Frame-Options, which is what lets the
+    split-origin dev builder (:5173) frame the preview (:8800)."""
+    cors = [o for o in (settings.cors_origins or []) if o and o != "*"]
+    frame_src = ["'self'", *cors]
+    if settings.debug:
+        frame_src += ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174"]
+    return "frame-ancestors " + " ".join(dict.fromkeys(frame_src))
+
+
+def retry_page(reason: str, status_code: int = 502) -> Response:
+    """Self-healing error page for the preview iframe.
+
+    Every proxy failure MUST come back as text/html WITH frame-ancestors:
+    a JSON/plain-text error gets X-Frame-Options SAMEORIGIN from
+    SecurityHeadersMiddleware, and the cross-origin builder iframe then renders
+    it as a silent blank page — the "blank preview until Reload iframe" bug.
+    The page polls its own URL and reloads the moment the app answers, so a
+    transient failure at first mount heals itself instead of sticking forever.
+    """
+    import html as _html
+
+    safe_reason = _html.escape(reason)
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starting…</title>
+<style>
+  html,body {{ height:100%; margin:0; font-family:system-ui,sans-serif;
+               background:#0b0d10; color:#9aa4b2; }}
+  .wrap {{ height:100%; display:flex; flex-direction:column; gap:14px;
+           align-items:center; justify-content:center; text-align:center; }}
+  .spin {{ width:26px; height:26px; border-radius:50%;
+           border:3px solid #2a313c; border-top-color:#7aa2f7;
+           animation:r 0.9s linear infinite; }}
+  @keyframes r {{ to {{ transform:rotate(360deg); }} }}
+  p {{ margin:0; font-size:13px; max-width:340px; line-height:1.5; }}
+  button {{ display:none; margin-top:6px; padding:6px 14px; font-size:12px;
+            border-radius:8px; border:1px solid #2a313c; background:#161b22;
+            color:#c9d1d9; cursor:pointer; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="spin"></div>
+  <p>{safe_reason}</p>
+  <p style="font-size:11px;opacity:.7">This page retries automatically.</p>
+  <button id="retry" onclick="location.reload()">Try again</button>
+</div>
+<script>
+  (function () {{
+    var started = Date.now();
+    function ping() {{
+      fetch(location.href, {{ cache: 'no-store' }})
+        .then(function (r) {{
+          var html = (r.headers.get('content-type') || '').indexOf('text/html') !== -1;
+          if (r.ok && html) {{ location.reload(); return; }}
+          again();
+        }})
+        .catch(again);
+    }}
+    function again() {{
+      if (Date.now() - started < 120000) {{ setTimeout(ping, 1500); }}
+      else {{
+        document.getElementById('retry').style.display = 'inline-block';
+        document.querySelector('.spin').style.display = 'none';
+      }}
+    }}
+    setTimeout(ping, 1500);
+  }})();
+</script>
+</body>
+</html>"""
+    return Response(
+        content=body,
+        status_code=status_code,
+        media_type="text/html",
+        headers={
+            "Content-Security-Policy": _frame_ancestors_value(),
+            # Never cache — the iframe must get a fresh answer once the app is up.
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 def _inject_context(html: str, app_id: str, user: dict | None, token: str | None) -> str:
     """Inject window globals into the HTML for the app SDK."""
     import json
@@ -84,12 +172,11 @@ async def proxy_http(
             headers=headers,
             content=body,
         )
-    except httpx.ConnectError:
-        return Response(
-            content="App is not running or still starting up",
-            status_code=502,
-            media_type="text/plain",
-        )
+    except httpx.HTTPError as e:
+        # Catch EVERYTHING httpx can throw, not just ConnectError — a cold-start
+        # ReadTimeout used to escape as an unframable 500 and blank the preview.
+        logger.info("proxy to app %s failed (%s: %s)", app_id, type(e).__name__, e)
+        return retry_page("The app is still starting up — hang tight.")
 
     content = resp.content
     content_type = resp.headers.get("content-type", "")
@@ -114,11 +201,7 @@ async def proxy_http(
     # Preview iframe is blank ("localhost refused to connect"). Only applied to the
     # framed HTML document.
     if "text/html" in content_type:
-        cors = [o for o in (settings.cors_origins or []) if o and o != "*"]
-        frame_src = ["'self'", *cors]
-        if settings.debug:
-            frame_src += ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174"]
-        resp_headers["Content-Security-Policy"] = "frame-ancestors " + " ".join(dict.fromkeys(frame_src))
+        resp_headers["Content-Security-Policy"] = _frame_ancestors_value()
 
     return Response(
         content=content,
@@ -132,11 +215,29 @@ async def proxy_websocket(ws: WebSocket, port: int, path: str) -> None:
     """Relay WebSocket messages between client and Vite HMR server."""
     import websockets
 
-    await ws.accept()
+    # Negotiate the subprotocol END-TO-END. Vite's HMR client connects with
+    # 'vite-hmr'; if our 101 response doesn't echo it back, the browser fails
+    # the whole connection (per spec) and Vite falls back to a direct socket
+    # to the raw Vite port — which only works when that port is reachable from
+    # the browser. Forward whatever the client asked for to Vite, and echo
+    # Vite's pick back to the client.
+    requested = list(ws.scope.get("subprotocols") or [])
     target_url = f"ws://127.0.0.1:{port}/{path}"
 
     try:
-        async with websockets.connect(target_url) as upstream:
+        async with websockets.connect(
+            target_url,
+            subprotocols=requested or None,
+            # Be as transparent as a browser, which never pings and accepts any
+            # frame size. The library defaults (20s ping/20s timeout, 1MB frame
+            # cap) can kill this socket mid-session — a Vite stall during a big
+            # transform, or one oversized HMR payload — and Vite's client reacts
+            # to ANY reconnect with location.reload(): the running preview
+            # "randomly restarts" under the user.
+            ping_interval=None,
+            max_size=None,
+        ) as upstream:
+            await ws.accept(subprotocol=upstream.subprotocol)
 
             async def client_to_upstream():
                 try:
@@ -144,6 +245,10 @@ async def proxy_websocket(ws: WebSocket, port: int, path: str) -> None:
                         data = await ws.receive_text()
                         await upstream.send(data)
                 except WebSocketDisconnect:
+                    pass
+                except Exception:
+                    # Upstream refused the send (closing) — let the other
+                    # direction surface the close instead of crashing the relay.
                     pass
 
             async def upstream_to_client():

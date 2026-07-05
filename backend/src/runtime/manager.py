@@ -221,6 +221,12 @@ class RuntimeManager:
             try:
                 proc = subprocess.Popen(
                     cmd, cwd=str(app_dir),
+                    # DEVNULL stdin: Vite otherwise inherits the backend console's
+                    # stdin for its "h + enter" shortcuts, and an orphaned Vite
+                    # crashes with `Error: read EPIPE` at a random later moment
+                    # when that console dies — leaving a dead preview behind a
+                    # toolbar that still says Running.
+                    stdin=subprocess.DEVNULL,
                     stdout=_log_fh, stderr=subprocess.STDOUT,
                     creationflags=creation_flags, env=env,
                 )
@@ -228,9 +234,10 @@ class RuntimeManager:
                 _log_fh.close()  # parent copy; the child keeps writing to the file
             app_proc.process = proc
 
-            # 3. Wait for vite to bind the port (~3-15s usually)
-            self._set_phase(app_proc, "waiting", f"polling http://127.0.0.1:{port}/")
-            ready = await self._wait_for_ready(port, timeout=30)
+            # 3. Wait for vite to actually serve the app (~3-15s usually)
+            self._set_phase(app_proc, "waiting",
+                            f"polling http://127.0.0.1:{port}/apps/{app_id}/")
+            ready = await self._wait_for_ready(port, app_id, timeout=30)
             # Require BOTH: the port answers AND our process is still alive. If the
             # poll succeeds but our Vite already exited, we collided with a leftover
             # on the port (the poll hit the orphan) — fall through to the error path
@@ -338,15 +345,26 @@ class RuntimeManager:
         loop = asyncio.get_event_loop()
         await asyncio.wait_for(loop.run_in_executor(None, _run), timeout=130)
 
-    async def _wait_for_ready(self, port: int, timeout: int = 30) -> bool:
-        """Poll the Vite dev server until it responds."""
+    async def _wait_for_ready(self, port: int, app_id: str, timeout: int = 30) -> bool:
+        """Poll the Vite dev server until the ACTUAL app document serves.
+
+        Vite runs with base=/apps/{app_id}/, so `/` is just its 404 hint page —
+        polling that (as we used to, accepting any <500) declared "running" the
+        moment the port answered, without ever exercising the HTML path the
+        Preview iframe is about to load. Require a 200 from the real base path
+        so "running" means "the iframe's first request will succeed".
+        """
+        url = f"http://127.0.0.1:{port}/apps/{app_id}/"
+        deadline = asyncio.get_event_loop().time() + timeout
         async with httpx.AsyncClient() as client:
-            for _ in range(timeout * 4):  # Check every 250ms
+            while asyncio.get_event_loop().time() < deadline:
                 try:
-                    resp = await client.get(f"http://127.0.0.1:{port}/", timeout=1.0)
-                    if resp.status_code < 500:
+                    # 3s per attempt: the first index.html transform on a cold
+                    # machine can exceed 1s; give it room instead of aborting.
+                    resp = await client.get(url, timeout=3.0)
+                    if resp.status_code == 200:
                         return True
-                except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
+                except httpx.HTTPError:
                     pass
                 await asyncio.sleep(0.25)
         return False

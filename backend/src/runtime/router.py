@@ -12,7 +12,7 @@ from ..auth.models import User
 from ..database import get_db
 from ..apps.service import apps_service
 from .manager import AppProcess, runtime_manager
-from .proxy import proxy_http, proxy_websocket
+from .proxy import proxy_http, proxy_websocket, retry_page
 from .schemas import AppStartRequest, AppStatusResponse
 
 
@@ -124,7 +124,18 @@ async def proxy_app_http(request: Request, app_id: str, path: str = ""):
     """HTTP proxy — serves the app UI and all Vite assets."""
     proc = runtime_manager.get_status(app_id)
     if not proc or proc.status != "running":
-        raise HTTPException(status_code=502, detail="App is not running. Start it first.")
+        # Must be a framable HTML page, NOT an HTTPException: a JSON 502 gets
+        # X-Frame-Options from SecurityHeadersMiddleware and the builder's
+        # cross-origin Preview iframe renders it as a silent blank screen.
+        # The page self-retries, so an iframe mounted a beat too early (or a
+        # runtime that is still starting) heals without a manual reload.
+        if proc and proc.status == "starting":
+            reason = "The app is still starting up — hang tight."
+        elif proc and proc.status == "error":
+            reason = f"The app failed to start: {(proc.error or 'unknown error')[:300]}"
+        else:
+            reason = "The app is not running. Start it from the builder's Preview tab."
+        return retry_page(reason)
 
     # Extract user context. Three transports, first VALID one wins — an expired
     # or garbage token is discarded (never injected into the page) so the next
@@ -139,19 +150,36 @@ async def proxy_app_http(request: Request, app_id: str, path: str = ""):
     user_info = None
     token = None
     auth_header = request.headers.get("authorization", "")
+    transports = ("authorization header", "access_token cookie", "__aihub_token query")
     candidates = [
         auth_header[7:] if auth_header.startswith("Bearer ") else None,
         request.cookies.get("access_token"),
         request.query_params.get("__aihub_token"),
     ]
-    for candidate in candidates:
+    won = None
+    for name, candidate in zip(transports, candidates):
         if not candidate:
             continue
         payload = auth_service.decode_access_token(candidate)
         if payload:
             token = candidate
+            won = name
             user_info = {"id": payload["sub"], "username": payload.get("username", ""), "role": payload.get("role", "")}
             break
+
+    # One line per app DOCUMENT load (not per asset): when an app's SDK calls
+    # all 401 ("Invalid or expired token"), this says whether the page got a
+    # token injected and from which transport — or that every supplied
+    # credential was stale/absent.
+    if not path:
+        if won:
+            logger.info("preview %s: injecting token from %s", app_id, won)
+        else:
+            supplied = [n for n, c in zip(transports, candidates) if c]
+            logger.warning(
+                "preview %s: NO valid token to inject (supplied: %s) — the app's SDK calls will 401",
+                app_id, ", ".join(supplied) or "none",
+            )
 
     return await proxy_http(request, proc.port, app_id, path, user=user_info, token=token)
 
