@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { platformError } from './session'
 
 declare global {
   interface Window {
@@ -88,7 +89,9 @@ export async function executeDataset<TRow = Record<string, unknown>>(
   )
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
-    throw new Error(`Dataset execute failed (${resp.status}): ${text || resp.statusText}`)
+    // 401 → the injected token expired: friendly message + 'aihub:token-expired'
+    // event instead of a raw {"detail":"Invalid or expired token"} in the UI.
+    throw platformError('Dataset execute', resp.status, text || resp.statusText)
   }
   return (await resp.json()) as DatasetResult<TRow>
 }

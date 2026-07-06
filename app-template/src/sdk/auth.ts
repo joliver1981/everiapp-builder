@@ -27,15 +27,22 @@ export async function fetchUser(): Promise<AppUser | null> {
   if (injected) return injected
   if (cachedUser !== undefined) return cachedUser
   try {
-    const resp = await fetch(`${AIHUB_BASE}/api/auth/me`, { credentials: 'include' })
+    // /api/auth/me is BEARER-ONLY (it never reads cookies), so send the
+    // injected token — 'credentials: include' alone always 401'd, which made
+    // every deployed/embedded app see an anonymous user forever.
+    const headers: Record<string, string> = {}
+    const token = (window as any).__AIHUB_TOKEN__
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const resp = await fetch(`${AIHUB_BASE}/api/auth/me`, { credentials: 'include', headers })
     if (!resp.ok) {
-      cachedUser = null
+      // Cache ONLY success: a host page may set window.__AIHUB_TOKEN__ after
+      // mount (documented embed contract) — a cached null would blind
+      // getUser()/fetchUser() for the rest of the page's life.
       return null
     }
     cachedUser = (await resp.json()) as AppUser
     return cachedUser
   } catch {
-    cachedUser = null
     return null
   }
 }

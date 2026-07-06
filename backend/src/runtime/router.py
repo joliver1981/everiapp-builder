@@ -35,6 +35,52 @@ def _proc_to_response(app_id: str, proc: AppProcess | None) -> AppStatusResponse
         phase_elapsed_seconds=elapsed,
     )
 
+# Lifetime of the token minted into a served preview/viewer page
+# (window.__AIHUB_TOKEN__). Long enough for a full working session in the
+# Preview iframe — the app has no way to refresh it once booted.
+PREVIEW_TOKEN_TTL_MINUTES = 12 * 60
+
+# The synthetic platform user embedded (anonymous) viewers act as. SDK
+# endpoints resolve the token's sub against the users table and scope app-db
+# writes by it, so embed sessions need a REAL row — one shared guest with the
+# weakest role. Created lazily on first embedded view.
+EMBED_GUEST_USERNAME = "embed-guest"
+
+
+async def _ensure_embed_guest():
+    """Return the shared embed-guest User, creating it on first use."""
+    from sqlalchemy import select
+
+    from ..auth.models import User
+    from ..database import async_session
+
+    async with async_session() as db:
+        user = (await db.execute(
+            select(User).where(User.username == EMBED_GUEST_USERNAME)
+        )).scalar_one_or_none()
+        # Callers read guest.id/.username/.role AFTER this session closes — safe
+        # only because the sessionmaker sets expire_on_commit=False (see
+        # database.py); the columns are populated at flush, so no lazy refresh
+        # fires post-close. If that setting ever flips, read the attrs before
+        # the `async with` exits.
+        if user:
+            return user
+        user = User(
+            username=EMBED_GUEST_USERNAME,
+            display_name="Embedded viewer",
+            role="user",
+        )
+        db.add(user)
+        try:
+            await db.commit()
+        except Exception:
+            # Lost a create race to a concurrent embedded view — use theirs.
+            await db.rollback()
+            user = (await db.execute(
+                select(User).where(User.username == EMBED_GUEST_USERNAME)
+            )).scalar_one_or_none()
+        return user
+
 # API router — mounted at /api/apps (same prefix as apps CRUD)
 api_router = APIRouter()
 
@@ -72,6 +118,25 @@ async def start_app(
                                app_id, "; ".join(sync_errors))
         except Exception:
             logger.exception("decision sync on start failed for %s (non-fatal)", app_id)
+
+        # Re-vendor the platform SDK into the draft on every preview start —
+        # existing apps keep the SDK snapshotted at generation time, so fixes
+        # (session-expiry handling, deployed-app URL bugs) never reached them.
+        # Best-effort and byte-compare-gated (see sync_vendored_sdk): identical
+        # files are never rewritten, so a running Vite doesn't HMR-reload.
+        # Draft only — version snapshots are immutable by design.
+        try:
+            from pathlib import Path
+
+            from ..config import settings
+            from ..apps.service import sync_vendored_sdk
+
+            frontend_dir = Path(settings.app_data_dir).resolve() / app_id / "draft" / "frontend"
+            updated = sync_vendored_sdk(frontend_dir)
+            if updated:
+                logger.info("re-vendored SDK for %s: %s", app_id, ", ".join(updated))
+        except Exception:
+            logger.exception("SDK re-vendor on start failed for %s (non-fatal)", app_id)
 
     proc = await runtime_manager.start_app(app_id, source)
     return _proc_to_response(app_id, proc)
@@ -162,10 +227,54 @@ async def proxy_app_http(request: Request, app_id: str, path: str = ""):
             continue
         payload = auth_service.decode_access_token(candidate)
         if payload:
-            token = candidate
             won = name
             user_info = {"id": payload["sub"], "username": payload.get("username", ""), "role": payload.get("role", "")}
+            # The winning credential proved WHO this is, but it may be minutes
+            # from expiry (operators run short access TTLs — 15 min here).
+            # The app keeps the injected __AIHUB_TOKEN__ for its whole session
+            # with no refresh path, so forwarding the incoming token means SDK
+            # calls start 401ing mid-session ("app-db migrate failed (401)")
+            # in any preview left open past the TTL. Mint a fresh
+            # preview-session token instead — same user, same role, but
+            # SCOPED: purpose=preview + app_id make it rejectable by
+            # require_role (admin/builder surfaces) and unusable against any
+            # other app — the app's own JS can read this token, so it must
+            # never be a general-purpose credential.
+            token = auth_service.create_access_token(
+                user_info["id"], user_info["role"],
+                expire_minutes=PREVIEW_TOKEN_TTL_MINUTES,
+                extra_claims={
+                    "purpose": "preview",
+                    "app_id": app_id,
+                    "username": user_info["username"],
+                },
+            )
             break
+
+    # Embedded (anonymous) viewers: the public embed bootstrap appends a
+    # signed, app-bound embed token to the inner iframe URL. Verify it and
+    # mint an app-scoped GUEST session token — without this, embedded
+    # data-backed apps rendered their shell and then 401'd on every SDK call.
+    if not token:
+        embed_candidate = request.query_params.get("__aihub_embed")
+        if embed_candidate:
+            from ..embedding.service import verify_embed_token
+
+            embed_app_id = verify_embed_token(embed_candidate)
+            if embed_app_id == app_id:
+                guest = await _ensure_embed_guest()
+                if guest:
+                    won = "__aihub_embed query"
+                    user_info = {"id": guest.id, "username": guest.username, "role": guest.role}
+                    token = auth_service.create_access_token(
+                        guest.id, guest.role,
+                        expire_minutes=PREVIEW_TOKEN_TTL_MINUTES,
+                        extra_claims={
+                            "purpose": "embed",
+                            "app_id": app_id,
+                            "username": guest.username,
+                        },
+                    )
 
     # One line per app DOCUMENT load (not per asset): when an app's SDK calls
     # all 401 ("Invalid or expired token"), this says whether the page got a
@@ -176,6 +285,8 @@ async def proxy_app_http(request: Request, app_id: str, path: str = ""):
             logger.info("preview %s: injecting token from %s", app_id, won)
         else:
             supplied = [n for n, c in zip(transports, candidates) if c]
+            if request.query_params.get("__aihub_embed"):
+                supplied.append("__aihub_embed query")
             logger.warning(
                 "preview %s: NO valid token to inject (supplied: %s) — the app's SDK calls will 401",
                 app_id, ", ".join(supplied) or "none",

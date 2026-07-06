@@ -135,22 +135,51 @@ async def get_conversation_history(
 async def websocket_chat(websocket: WebSocket):
     await websocket.accept()
 
-    # Authenticate via first message
+    # Authenticate via first message. Failures send a TYPED auth_error payload
+    # and close with an application code (4401) so clients can distinguish
+    # "refresh your token and reconnect" from a normal close — the old bare
+    # {"type":"error","data":"Invalid token"} + close(1000) forced clients to
+    # string-match and surfaced verbatim in the builder chat.
     try:
         auth_msg = await websocket.receive_json()
         token = auth_msg.get("token")
         if not token:
-            await websocket.send_json({"type": "error", "data": "Authentication required"})
-            await websocket.close()
+            await websocket.send_json({"type": "auth_error", "data": {
+                "code": "token_missing", "message": "Authentication required"}})
+            await websocket.close(code=4401)
             return
 
         payload = auth_service.decode_access_token(token)
         if not payload:
-            await websocket.send_json({"type": "error", "data": "Invalid token"})
-            await websocket.close()
+            # Covers both expired and structurally-invalid tokens; the client
+            # treats both identically (refresh + reconnect).
+            await websocket.send_json({"type": "auth_error", "data": {
+                "code": "token_invalid",
+                "message": "Invalid or expired token — refresh and reconnect"}})
+            await websocket.close(code=4401)
+            return
+
+        # Injected preview/embed session tokens are readable by generated-app
+        # JS. The builder chat generates code and spends LLM budget — never
+        # available to those.
+        if payload.get("purpose") in ("preview", "embed"):
+            await websocket.send_json({"type": "auth_error", "data": {
+                "code": "token_scope",
+                "message": "Preview/embed session tokens cannot use the builder chat"}})
+            await websocket.close(code=4401)
             return
 
         user_id = payload["sub"]
+        # The token only proves it WAS valid at mint time — check the account
+        # still exists and is active before opening a generation channel.
+        async with async_session() as db:
+            user = await auth_service.get_user_by_id(db, user_id)
+            if not user or not user.is_active:
+                await websocket.send_json({"type": "auth_error", "data": {
+                    "code": "account_disabled",
+                    "message": "Your account has been deactivated"}})
+                await websocket.close(code=4401)
+                return
         await websocket.send_json({"type": "authenticated", "data": {"user_id": user_id}})
     except WebSocketDisconnect:
         return
@@ -182,6 +211,18 @@ async def websocket_chat(websocket: WebSocket):
 
             # Stream response
             async with async_session() as db:
+                # Re-validate the account per message: the socket authenticated
+                # once at connect (tokens aren't re-checked on a live socket),
+                # so without this a user deactivated by an admin keeps an open
+                # chat generating apps indefinitely. One PK lookup per message
+                # is noise next to the LLM call it gates.
+                user = await auth_service.get_user_by_id(db, user_id)
+                if not user or not user.is_active:
+                    await websocket.send_json({"type": "auth_error", "data": {
+                        "code": "account_disabled",
+                        "message": "Your account has been deactivated"}})
+                    await websocket.close(code=4401)
+                    return
                 async for chunk in ai_service.chat(db, app_id, message, conversation_id, provider_id, user_id=user_id, live_code=live_code, editor_context=editor_context):
                     await websocket.send_json(chunk)
 

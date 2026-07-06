@@ -89,6 +89,33 @@ class _FakeClient:
         return _FakeResp()
 
 
+def _injected_token(html: str) -> str:
+    """Pull window.__AIHUB_TOKEN__ out of the served HTML."""
+    import re
+    m = re.search(r'window\.__AIHUB_TOKEN__ = "([^"]+)"', html)
+    assert m, f"no __AIHUB_TOKEN__ injected: {html[:300]}"
+    return m.group(1)
+
+
+def _assert_fresh_preview_token(injected: str, supplied: str):
+    """The proxy must MINT a fresh preview-session token, not forward the
+    supplied credential: operators run short access TTLs (15 min in the field)
+    and the app holds its injected token for the whole session with no refresh
+    path — forwarding meant SDK calls started 401ing mid-session
+    ("app-db migrate failed (401)") in any preview open past the TTL."""
+    import time
+
+    from src.auth.service import auth_service
+
+    assert injected != supplied                      # minted, not forwarded
+    supplied_payload = auth_service.decode_access_token(supplied)
+    payload = auth_service.decode_access_token(injected)
+    assert payload is not None                       # valid signature + type
+    assert payload["sub"] == supplied_payload["sub"]     # same user
+    assert payload["role"] == supplied_payload["role"]   # same role
+    assert payload["exp"] > time.time() + 6 * 3600   # preview-session length
+
+
 def test_proxy_injects_app_id_and_token_from_query_param(client, admin_token, monkeypatch):
     app_id = "preview-app-xyz"
     # Pretend the app's Vite dev server is up...
@@ -100,7 +127,7 @@ def test_proxy_injects_app_id_and_token_from_query_param(client, admin_token, mo
     assert r.status_code == 200, r.text
     body = r.text
     assert f'window.__AIHUB_APP_ID__ = "{app_id}";' in body   # the SDK gets its app id
-    assert f'window.__AIHUB_TOKEN__ = "{admin_token}";' in body  # ...and an auth token
+    _assert_fresh_preview_token(_injected_token(body), admin_token)
     assert "__AIHUB_USER__" in body                            # decoded from the token
     # Forwarded the FULL base-prefixed path to Vite (base=/apps/{id}/), not a stripped one —
     # else every asset (/@vite/client, /src/main.tsx) 404s and the app never boots.
@@ -116,7 +143,7 @@ def test_proxy_injects_token_from_cookie(client, admin_token, monkeypatch):
 
     r = client.get(f"/apps/{app_id}/", cookies={"access_token": admin_token})
     assert r.status_code == 200, r.text
-    assert f'window.__AIHUB_TOKEN__ = "{admin_token}";' in r.text
+    _assert_fresh_preview_token(_injected_token(r.text), admin_token)
     assert f'window.__AIHUB_APP_ID__ = "{app_id}";' in r.text
 
 
@@ -134,7 +161,7 @@ def test_proxy_never_injects_undecodable_tokens(client, admin_token, monkeypatch
     r = client.get(f"/apps/junk-token-app/?__aihub_token={admin_token}",
                    cookies={"access_token": "expired-garbage"})
     assert r.status_code == 200
-    assert f'window.__AIHUB_TOKEN__ = "{admin_token}";' in r.text
+    _assert_fresh_preview_token(_injected_token(r.text), admin_token)
 
 
 def _assert_framable_retry_page(r):

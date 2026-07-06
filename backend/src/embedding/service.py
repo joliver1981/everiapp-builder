@@ -9,7 +9,10 @@ import jwt
 from ..config import settings
 
 _ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d+)?$")
-EMBED_TOKEN_TTL_SECONDS = 3600
+# Session-length, matching the preview token: the embedded page has no
+# refresh path, and an in-iframe reload re-presents the token from its URL —
+# a short TTL would strand embedded apps unauthenticated mid-session.
+EMBED_TOKEN_TTL_SECONDS = 12 * 3600
 
 
 def parse_origins(csv: str) -> list[str]:

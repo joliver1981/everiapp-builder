@@ -60,17 +60,20 @@ class Check:
                 env=env,
                 capture_output=True,
                 text=True,
-                # 1500s budget: the backend suite spans 5 feature waves plus the
+                # 2400s budget: the backend suite spans 5 feature waves plus the
                 # marketplace export/import + publish-pipeline + remote-gallery
                 # HTTP integration tests (each module spins a full TestClient
                 # lifespan). Measured wall time on a QUIET machine was 920s on
-                # 2026-07-02 (567 passed / 115 skipped) — the old 720s cap
-                # produced two TIMEOUT blocks that looked like failures. The
-                # headroom over 920s absorbs machine load. If this gets painful,
-                # mark the heaviest HTTP-lifecycle tests @pytest.mark.slow and
-                # add `-m "not slow"` here — simple 2-request tests are showing
-                # 20-25s apiece, so there's real optimization headroom too.
-                timeout=1500,
+                # 2026-07-02 (567 passed / 115 skipped); by 2026-07-06 the suite
+                # had grown to 756 items (each new *_http.py module adds ~20-25s
+                # of TestClient-lifespan startup) and legitimately runs ~25min,
+                # tipping the old 1500s cap into TIMEOUT blocks that looked like
+                # failures on a loaded machine. Raised to 2400s. If this gets
+                # painful, mark the heaviest HTTP-lifecycle tests
+                # @pytest.mark.slow and add `-m "not slow"` here — simple
+                # 2-request tests are showing 20-25s apiece, so there's real
+                # optimization headroom too.
+                timeout=2400,
             )
         except subprocess.TimeoutExpired as e:
             return False, f"TIMEOUT after {e.timeout}s", time.monotonic() - t0

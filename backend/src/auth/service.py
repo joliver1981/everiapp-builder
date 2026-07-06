@@ -12,14 +12,33 @@ from ..config import settings
 
 
 class AuthService:
-    def create_access_token(self, user_id: str, role: str) -> str:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-        payload = {
+    def create_access_token(
+        self,
+        user_id: str,
+        role: str,
+        expire_minutes: int | None = None,
+        extra_claims: dict | None = None,
+    ) -> str:
+        """Mint an access token.
+
+        extra_claims lets mint sites attach scoping/identity claims:
+          - "username": shown by apps via the injected __AIHUB_USER__;
+          - "purpose": "preview" | "embed" — session tokens minted for
+            injection into a running app. These are REJECTED by require_role
+            (admin/developer surfaces) and app-scoped by the dependencies;
+          - "app_id": the app a purpose-scoped token belongs to.
+        Reserved keys (sub/role/exp/type) always win over extra_claims.
+        """
+        expire = datetime.now(timezone.utc) + timedelta(
+            minutes=expire_minutes or settings.jwt_access_token_expire_minutes
+        )
+        payload = {**(extra_claims or {})}
+        payload.update({
             "sub": user_id,
             "role": role,
             "exp": expire,
             "type": "access",
-        }
+        })
         return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
     def create_refresh_token_value(self) -> str:
@@ -104,7 +123,7 @@ class AuthService:
             return None
 
         # Create tokens
-        access_token = self.create_access_token(user.id, user.role)
+        access_token = self.create_access_token(user.id, user.role, extra_claims={"username": user.username})
         refresh_value = self.create_refresh_token_value()
 
         # Store refresh token
@@ -144,7 +163,7 @@ class AuthService:
             return None
 
         # Issue new tokens
-        new_access = self.create_access_token(user.id, user.role)
+        new_access = self.create_access_token(user.id, user.role, extra_claims={"username": user.username})
         new_refresh = self.create_refresh_token_value()
 
         new_refresh_token = RefreshToken(
@@ -213,7 +232,7 @@ class AuthService:
     async def issue_session(self, db: AsyncSession, user: User) -> tuple[str, str]:
         """Mint access + refresh tokens for a user, persist the refresh, commit.
         Returns (access_token, refresh_value)."""
-        access_token = self.create_access_token(user.id, user.role)
+        access_token = self.create_access_token(user.id, user.role, extra_claims={"username": user.username})
         refresh_value = self.create_refresh_token_value()
         db.add(RefreshToken(
             user_id=user.id,

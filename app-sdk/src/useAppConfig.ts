@@ -16,6 +16,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { hasSessionToken, notifySessionExpired } from './session'
 
 declare global {
   interface Window {
@@ -37,13 +38,16 @@ function getAppId(): string | null {
   return null
 }
 
-async function loadConfig(): Promise<Record<string, string>> {
+/** Returns the config on success, or null on FAILURE (never cache failures). */
+async function loadConfig(): Promise<Record<string, string> | null> {
   if (window.__AIHUB_CONFIG__) {
     return window.__AIHUB_CONFIG__
   }
 
   const appId = getAppId()
   if (!appId) {
+    // Legitimately empty (not injected, no meta tag) — this cannot change
+    // within a page's life, so treat as a successful empty config.
     console.warn('[AIHub SDK] No app ID found. Config will be empty.')
     return {}
   }
@@ -59,14 +63,15 @@ async function loadConfig(): Promise<Record<string, string>> {
     const response = await fetch(url, { credentials: 'include', headers })
     if (!response.ok) {
       console.error(`[AIHub SDK] Failed to load config: ${response.status}`)
-      return {}
+      if (response.status === 401 && hasSessionToken()) notifySessionExpired()
+      return null
     }
     const config = await response.json()
     window.__AIHUB_CONFIG__ = config
     return config
   } catch (err) {
     console.error('[AIHub SDK] Error loading config:', err)
-    return {}
+    return null
   }
 }
 
@@ -82,8 +87,14 @@ export function useAppConfig(): Record<string, string> {
     }
 
     loadConfig().then((cfg) => {
-      cachedConfig = cfg
-      setConfig(cfg)
+      // Cache ONLY success. Caching a failed ({}) load poisoned every later
+      // mount for the page's lifetime — one transient 401/blip at boot and
+      // settings-dependent features silently ran unconfigured until a full
+      // reload. On failure the next mount simply retries.
+      if (cfg !== null) {
+        cachedConfig = cfg
+      }
+      setConfig(cfg ?? {})
     })
   }, [])
 

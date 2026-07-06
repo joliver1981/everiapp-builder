@@ -136,7 +136,7 @@ interface ChatState {
   setConversationId: (id: string | null) => void
   clearMessages: () => void
   loadHistory: (messages: ChatMessage[], conversationId: string | null) => void
-  connect: (token: string) => Promise<void>
+  connect: () => Promise<void>
   sendMessage: (appId: string, message: string, providerId?: string | null, editorContext?: EditorContext | null) => void
   rollbackDraft: () => Promise<{ ok: boolean; error?: string }>
   dismissVerifyResult: () => void
@@ -213,7 +213,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   }),
   loadHistory: (messages, conversationId) => set({ messages, conversationId }),
 
-  connect: async (token: string) => {
+  connect: async () => {
     // A fresh/explicit connect cancels any pending auto-reconnect attempt.
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
     intentionalClose = false
@@ -226,7 +226,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set({ isConnecting: true, connectionError: null })
 
+    // Freshen the access token BEFORE authenticating the socket. Tokens can be
+    // as short as 15 min; a reconnect after idle/sleep (or a token captured at
+    // page load) would otherwise present a dead token and the backend answers
+    // {"type":"error","data":"Invalid token"} + close — which used to spam the
+    // chat with one red error bubble per retry. Any authenticated request does
+    // it: apiClient transparently refreshes on 401 and retries.
+    try {
+      await apiClient.get('/auth/me')
+    } catch {
+      // Backend unreachable or genuinely signed out — try the socket anyway;
+      // its own failure path handles retry/backoff.
+    }
+    const token = apiClient.getToken()
+
     return new Promise<void>((resolve, reject) => {
+      // Tracks whether THIS socket got past the auth handshake — auth-phase
+      // errors are connection plumbing (handled by the reconnect path), not
+      // conversation content, so they must never become chat bubbles.
+      let authenticated = false
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       // In dev, Vite's proxy can fail to forward this WebSocket upgrade to Chrome
       // (HMR connects, but the proxied /api WS upgrade hangs), so connect straight to
@@ -245,6 +263,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         switch (data.type) {
           case 'authenticated':
+            authenticated = true
             reconnectAttempts = 0
             set({ ws: socket, isConnected: true, isConnecting: false, connectionError: null })
             resolve()
@@ -363,7 +382,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           }
 
+          case 'auth_error':
+            // Typed auth failure (v0.7.8 contract; closes with code 4401).
+            // Never conversation content. Before the handshake it's plumbing —
+            // onclose reconnects with a freshened token. After the handshake
+            // it's TERMINAL (account deactivated mid-session): mark the close
+            // intentional so onclose does NOT reconnect — otherwise ~12 doomed
+            // retries fire and each wipes the explanatory banner, so the user
+            // never learns why chat stopped.
+            if (authenticated) {
+              intentionalClose = true
+              set({
+                isConnecting: false,
+                connectionError: data.data?.message || 'Your session is no longer valid.',
+              })
+            } else {
+              set({ isConnecting: true, connectionError: null })
+            }
+            break
+
           case 'error':
+            // Auth-phase rejections ("Invalid token", "Authentication
+            // required") are NOT conversation content — the server closes the
+            // socket and onclose reconnects with a freshened token. Rendering
+            // them used to stack one red bubble per retry after the token
+            // expired while the builder sat idle. (Kept for pre-v0.7.8
+            // backends; new ones send the typed auth_error above.)
+            if (!authenticated) {
+              set({ isConnecting: true, connectionError: null })
+              break
+            }
             set({ isStreaming: false })
             get().addMessage({
               id: `error-${++messageIdCounter}`,
@@ -397,7 +445,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ isConnecting: true, connectionError: null })
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null
-          get().connect(token).catch(() => { /* onclose schedules the next retry */ })
+          // No captured credential: connect() freshens the token itself. The
+          // old `connect(token)` closure replayed the SAME token forever —
+          // guaranteed-dead after 15 min of sitting idle.
+          get().connect().catch(() => { /* onclose schedules the next retry */ })
         }, delay)
       }
     })

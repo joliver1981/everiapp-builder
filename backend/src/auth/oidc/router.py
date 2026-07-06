@@ -165,7 +165,7 @@ async def callback(provider_id: str, request: Request, db: AsyncSession = Depend
     if user is None:
         return _fail("not_provisioned")
 
-    access_token = auth_service.create_access_token(user.id, user.role)
+    access_token = auth_service.create_access_token(user.id, user.role, extra_claims={"username": user.username})
     refresh_value = auth_service.create_refresh_token_value()
     db.add(RefreshToken(
         user_id=user.id, token_hash=auth_service.hash_token(refresh_value),

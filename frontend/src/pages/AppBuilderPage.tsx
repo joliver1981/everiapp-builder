@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useState, useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   MessageSquare,
@@ -164,7 +164,6 @@ export function AppBuilderPage() {
   const setAutoJumpEnabled = useChatStore((s) => s.setAutoJumpEnabled)
   const setEditorContext = useChatStore((s) => s.setEditorContext)
   const turnFilePaths = useChatStore((s) => s.turnFilePaths)
-  const token = useAuthStore(() => apiClient.getToken())
   const user = useAuthStore((s) => s.user)
 
   // The Preview iframe's auth rides in an `access_token` cookie scoped to
@@ -172,9 +171,9 @@ export function AppBuilderPage() {
   // refreshed token reaches any LATER iframe navigation (retry-page heal,
   // HMR reload) without ever changing the iframe src — a rotating token in
   // src navigates the iframe and hard-resets the running preview mid-use.
-  // Read apiClient.getToken() DIRECTLY, not via the `token` store selector:
-  // zustand only re-runs selectors when the STORE changes, and the token
-  // lives outside the store (apiClient), so the selector serves a frozen —
+  // Read apiClient.getToken() DIRECTLY, never through a zustand selector:
+  // selectors only re-run when the STORE changes, and the token lives
+  // outside the store (apiClient), so a selector serves a frozen —
   // eventually expired — value long after apiClient refreshed. An expired
   // cookie is discarded by the proxy and the app boots unauthenticated
   // ("app-db migrate failed (401)"). Re-set on every render.
@@ -335,26 +334,28 @@ export function AppBuilderPage() {
   const [runtimePhaseDetail, setRuntimePhaseDetail] = useState<string | null>(null)
   const [runtimePhaseElapsed, setRuntimePhaseElapsed] = useState<number | null>(null)
 
-  // The iframe URL, PINNED per mount. Two hard constraints meet here:
-  //  1. The src must NEVER change while the iframe is mounted — React writes a
-  //     changed src onto the live element and the browser navigates it, hard-
-  //     resetting the running app (this happened on every token rotation).
-  //  2. The access_token cookie alone isn't a reliable transport: cookies are
-  //     host-scoped, so browsing the builder via 127.0.0.1/LAN IP while the
-  //     dev iframe targets localhost:8800 silently drops it → the proxy
-  //     injects no token → every SDK call in the app 401s.
-  // So the token ALSO rides in the query, but read at MOUNT time only (deps
-  // exclude it deliberately). It's always fresh: the iframe only mounts right
-  // after a successful (authenticated) /runtime/status round-trip. On later
-  // in-place reloads (retry page heal, HMR) the every-render cookie — which
-  // the proxy prefers over the query — supplies a current token.
-  const previewSrc = useMemo(() => {
-    if (!currentApp) return ''
+  // The iframe URL, held in STATE and recomputed only at moments that follow
+  // a successful authenticated API round-trip. Three hard constraints:
+  //  1. The src must NEVER change while the iframe is mounted — React writes
+  //     a changed src onto the live element and the browser navigates it,
+  //     hard-resetting the running app (happened on every token rotation).
+  //  2. The token in the src must be FRESH at every (re)mount. Access tokens
+  //     can be as short as 15 min (.env), and the preview panel unmounts and
+  //     remounts on every panel switch — a memo pinned to [previewKey, appId]
+  //     served an hour-old token after "chat for a while, then back to
+  //     Preview" and the app booted unauthenticated
+  //     ("app-db migrate failed (401)").
+  //  3. The cookie alone isn't a reliable transport (host-scoped — a
+  //     127.0.0.1/LAN-hosted builder never delivers it to localhost:8800).
+  // So: previewSrc is assigned ONLY right after an apiClient call succeeded —
+  // apiClient transparently refreshes on 401, so getToken() is verified-fresh
+  // at exactly those moments.
+  const [previewSrc, setPreviewSrc] = useState('')
+  const buildPreviewSrc = (appId: string) => {
     const tok = apiClient.getToken()
-    return `${import.meta.env.DEV ? 'http://localhost:8800' : ''}/apps/${currentApp.id}/` +
+    return `${import.meta.env.DEV ? 'http://localhost:8800' : ''}/apps/${appId}/` +
       (tok ? `?__aihub_token=${encodeURIComponent(tok)}` : '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- token intentionally unpinned: see above
-  }, [previewKey, currentApp?.id])
+  }
 
   // Delete state
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -393,11 +394,14 @@ export function AppBuilderPage() {
     }
   }, [appId])
 
+  // connect() freshens its own token (chatStore) — passing one in from here
+  // was the stale-credential source behind the "Error: Invalid token" bubble
+  // spam after the builder sat idle past the 15-min access TTL.
   useEffect(() => {
-    if (currentApp && token) {
-      connect(token).catch(console.error)
+    if (currentApp) {
+      connect().catch(console.error)
     }
-  }, [currentApp, token])
+  }, [currentApp])
 
   // Auto-refresh file tree when AI finishes generating, AND reload any open tab the AI just
   // changed so the user watches edits land in the editor (in-code collaboration). Only
@@ -718,6 +722,10 @@ export function AppBuilderPage() {
     // don't tear down an already-rendering preview on every poll tick.
     if (resp.status === 'running' && prevStatus !== 'running') {
       setPreviewKey((k) => k + 1)
+      // This transition was observed via an apiClient call that just
+      // succeeded, so getToken() is verified-fresh right now — the moment
+      // to (re)compute the iframe URL.
+      if (currentApp) setPreviewSrc(buildPreviewSrc(currentApp.id))
     }
   }
 
@@ -750,7 +758,17 @@ export function AppBuilderPage() {
     setRuntimeError(null)
   }
 
-  const handleRefreshPreview = () => {
+  const handleRefreshPreview = async () => {
+    if (!currentApp) return
+    // Force-freshen the token first — any authenticated call does (a 401
+    // triggers apiClient's transparent refresh) — THEN rebuild the URL and
+    // remount. A reload button that resurrects a stale token would boot the
+    // app unauthenticated after sitting on this panel past the token TTL.
+    try {
+      const s = await apiClient.get<RuntimeStatusResp>(`/apps/${currentApp.id}/runtime/status`)
+      applyRuntimeResp(s)
+    } catch { /* still reload with what we have */ }
+    setPreviewSrc(buildPreviewSrc(currentApp.id))
     setPreviewKey((k) => k + 1)
   }
 
@@ -772,17 +790,32 @@ export function AppBuilderPage() {
     }
   }
 
-  // Check runtime status when switching to preview
+  // Check runtime status when switching to preview. The iframe unmounts on
+  // every panel switch, so returning here is a fresh document load — recompute
+  // previewSrc AFTER this authenticated round-trip (apiClient refreshes an
+  // expired token on 401 transparently), never reuse a token pinned before
+  // the user wandered off to Chat for an hour.
   useEffect(() => {
     if (activePanel === 'preview' && currentApp) {
       apiClient.get<RuntimeStatusResp>(`/apps/${currentApp.id}/runtime/status`)
-        .then(applyRuntimeResp)
+        .then((s) => {
+          applyRuntimeResp(s)
+          setPreviewSrc(buildPreviewSrc(currentApp.id))
+        })
         // On a FAILED check keep the last known state: downgrading to 'stopped'
         // would unmount a healthy running iframe (full app reload) over a
         // transient network/backend blip. The pollers re-sync the truth.
         .catch(() => { /* keep current state */ })
     }
   }, [activePanel, currentApp])
+
+  // Leaving the preview panel unmounts the iframe; blank its URL too so the
+  // return path always WAITS for the fresh authenticated computation above,
+  // instead of briefly mounting with the previous (possibly expired) token
+  // and then navigating a second time when the fresh URL lands.
+  useEffect(() => {
+    if (activePanel !== 'preview') setPreviewSrc('')
+  }, [activePanel])
 
   // While the runtime is starting, poll /runtime/status every 1.5s so the UI
   // can show real progress instead of a silent "Starting..." for 60 seconds.
@@ -1351,9 +1384,9 @@ export function AppBuilderPage() {
               {/* Preview content — served through the platform proxy (/apps/{id}/), NOT the raw
                   Vite port, so the runtime proxy injects the SDK globals (window.__AIHUB_APP_ID__ /
                   __AIHUB_TOKEN__) and the app is same-origin with /api (useDataset etc. work).
-                  previewSrc is pinned per mount (see its useMemo) — a LIVE token in this src
+                  previewSrc is state set only after authenticated round-trips — a LIVE token in this src
                   navigates the iframe on every rotation and hard-resets the running app. */}
-              {runtimeStatus === 'running' && runtimePort ? (
+              {runtimeStatus === 'running' && runtimePort && previewSrc ? (
                 <iframe
                   key={previewKey}
                   src={previewSrc}
@@ -1374,7 +1407,10 @@ export function AppBuilderPage() {
                     Retry
                   </button>
                 </div>
-              ) : runtimeStatus === 'starting' ? (
+              ) : runtimeStatus === 'starting' || runtimeStatus === 'running' ? (
+                /* 'running' lands here only in the brief window where the
+                   fresh previewSrc is still being computed (panel return /
+                   manual reload) — show the spinner, not "Start Preview". */
                 <div className="flex flex-1 items-center justify-center">
                   <div className="max-w-md text-center">
                     <Loader2 size={32} className="mx-auto animate-spin text-primary" />

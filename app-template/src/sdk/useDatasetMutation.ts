@@ -12,6 +12,7 @@
  *   await mutate({ product_id: id, new_price: price })
  */
 import { useCallback, useState } from 'react'
+import { platformError } from './session'
 
 declare global {
   interface Window {
@@ -56,7 +57,8 @@ export function useDatasetMutation(datasetId: string) {
         )
         if (!resp.ok) {
           const text = await resp.text().catch(() => '')
-          throw new Error(`Mutation failed (${resp.status}): ${text || resp.statusText}`)
+          // 401 → expired session: friendly message + 'aihub:token-expired' event.
+          throw platformError('Mutation', resp.status, text || resp.statusText)
         }
         return (await resp.json()) as DatasetMutationResult
       } catch (e) {

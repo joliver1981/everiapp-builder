@@ -844,6 +844,17 @@ class AIService:
                 logger.warning("Path traversal blocked: %s (app %s)", f.path, app_id)
                 continue
 
+            # The vendored SDK is platform infrastructure (generation Rule 7:
+            # never edit src/sdk). Enforce it in CODE, not just the prompt:
+            # preview start now re-vendors src/sdk from the template, so a
+            # model edit here wouldn't fail loudly — it would verify green,
+            # then be silently REVERTED on the next Start, and any app code
+            # importing the customization breaks with no visible cause.
+            rel = file_path.relative_to(resolved_app_dir).as_posix()
+            if rel == "src/sdk" or rel.startswith("src/sdk/"):
+                logger.warning("Blocked model write to vendored SDK: %s (app %s)", f.path, app_id)
+                continue
+
             if f.action == "delete":
                 if file_path.exists():
                     file_path.unlink()

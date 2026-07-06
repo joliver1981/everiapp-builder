@@ -138,7 +138,7 @@ async def acs(provider_id: str, request: Request, db: AsyncSession = Depends(get
                                 status_code=302)
 
     # Issue our own tokens (same shape as a password login).
-    access_token = auth_service.create_access_token(user.id, user.role)
+    access_token = auth_service.create_access_token(user.id, user.role, extra_claims={"username": user.username})
     refresh_value = auth_service.create_refresh_token_value()
     db.add(RefreshToken(
         user_id=user.id,

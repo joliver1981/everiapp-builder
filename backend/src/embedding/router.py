@@ -90,11 +90,19 @@ async def create_embed_token(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_role("admin", "developer")),
 ):
+    """Mint an embed credential for integrators who frame the app URL
+    directly instead of using the /embed bootstrap (which mints its own).
+    Append it as ?__aihub_embed=<token> on /apps/{app_id}/view — the runtime
+    proxy verifies it and injects an app-scoped guest session token."""
     app = await _get_app(db, app_id)
     if not app.embed_enabled:
         raise HTTPException(status_code=409, detail="Embedding is not enabled for this app")
     token, ttl = service.mint_embed_token(app_id)
-    return {"token": token, "expires_in": ttl}
+    return {
+        "token": token,
+        "expires_in": ttl,
+        "usage": f"/apps/{app_id}/view?__aihub_embed=<token>",
+    }
 
 
 @router.get("/{app_id}/embed", response_class=HTMLResponse)
@@ -113,7 +121,13 @@ async def embed_bootstrap(
     origins = service.parse_origins(app.embed_allowed_origins)
     csp = f"frame-ancestors {service.frame_ancestors(origins)}"
     base = str(request.base_url).rstrip("/")
-    inner = f"{base}/apps/{app_id}/view"
+    # Mint the embed credential HERE (this endpoint already gates on
+    # embed_enabled) and hand it to the inner iframe: the runtime proxy
+    # verifies it and injects an app-scoped GUEST session token. Without it,
+    # anonymous embedded viewers had no token transport at all and every SDK
+    # call in the embedded app 401'd.
+    embed_token, _ttl = service.mint_embed_token(app_id)
+    inner = f"{base}/apps/{app_id}/view?__aihub_embed={embed_token}"
     html = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"

@@ -94,6 +94,53 @@ def refresh_vendored_sdk(frontend_dir: Path) -> None:
         shutil.copytree(template_sdk, vendored)
 
 
+def sync_vendored_sdk(frontend_dir: Path) -> list[str]:
+    """Converge an app tree's src/sdk to the current template copy, touching
+    ONLY files whose bytes differ. Returns the names it (re)wrote.
+
+    This is the preview-start variant of refresh_vendored_sdk: existing apps
+    keep whatever SDK was vendored at generation time, so SDK fixes never
+    reached them until now. Two constraints shape it:
+      - a Vite dev server may already be watching these files, and rewriting
+        an identical file still fires HMR → the running preview would reload
+        on every Start click (the exact reset class fixed in v0.7.x) — hence
+        the byte-compare before every write;
+      - never DELETE extras: an older app may still import a module the
+        template has since dropped, and breaking its build is worse than
+        letting a dead file lie."""
+    template_sdk = Path(__file__).parent.parent.parent.parent / "app-template" / "src" / "sdk"
+    vendored = frontend_dir / "src" / "sdk"
+    updated: list[str] = []
+    if not (template_sdk.exists() and vendored.exists()):
+        return updated
+
+    def _write_atomic(dst: Path, data: bytes) -> None:
+        # A live Vite may re-read on the chokidar event; a plain write_bytes
+        # truncates first, so the watcher can catch a 0-byte/partial module
+        # (red overlay in an open preview). Rename-in-place is atomic on both
+        # Windows and POSIX.
+        tmp = dst.with_name(dst.name + ".aihub-sync-tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, dst)
+
+    files = [p for p in sorted(template_sdk.iterdir()) if p.is_file()]
+    # Two passes — ADDS first: an updated importer must never be observable
+    # before the new module it imports exists (e.g. './session'), or a live
+    # Vite flashes an unresolved-import overlay for the gap.
+    for src in files:
+        dst = vendored / src.name
+        if not dst.exists():
+            _write_atomic(dst, src.read_bytes())
+            updated.append(src.name)
+    for src in files:
+        dst = vendored / src.name
+        data = src.read_bytes()
+        if src.name not in updated and dst.read_bytes() != data:
+            _write_atomic(dst, data)
+            updated.append(src.name)
+    return updated
+
+
 class AppsService:
     async def list_apps(self, db: AsyncSession, user: User) -> list[App]:
         if user.role == "admin":

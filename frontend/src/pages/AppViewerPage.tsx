@@ -61,7 +61,11 @@ export function AppViewerPage() {
 
   // Post-install setup: prompt when required wizard fields have no values yet.
   const user = useAuthStore((s) => s.user)
-  const token = useAuthStore(() => apiClient.getToken())
+  // Read the token DIRECTLY each render, never via a zustand selector:
+  // selectors only re-run on STORE changes, and the token lives outside the
+  // store (apiClient) — a selector serves a frozen, eventually-expired value
+  // long after apiClient refreshed, and the cookie below inherits it.
+  const token = apiClient.getToken()
   const canConfigure = user?.role === 'admin' || user?.role === 'developer'
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null)
   const [setupWizard, setSetupWizard] = useState<WizardSchema | null>(null)
@@ -184,6 +188,27 @@ export function AppViewerPage() {
         // transient — keep polling
       }
     }, 1500)
+    return () => clearInterval(id)
+  }, [app, runtimeStatus])
+
+  // Once running, keep a slow heartbeat. Without it this page goes completely
+  // quiet — zero API calls, zero re-renders — so with a 15-min access TTL the
+  // in-memory token silently dies and the /apps cookie (re-set per render)
+  // freezes stale; the next iframe remount ("Complete setup" reload, Open in
+  // new tab, in-app refresh) then boots the app unauthenticated. Each tick is
+  // an authenticated round-trip (apiClient transparently refreshes on 401) and
+  // the applyRuntimeResp state change re-renders → cookie re-set fresh. It
+  // also surfaces a crashed runtime instead of a stale healthy-looking page.
+  useEffect(() => {
+    if (!app || runtimeStatus !== 'running') return
+    const id = setInterval(async () => {
+      try {
+        const s = await apiClient.get<RuntimeStatusResp>(`/apps/${app.id}/runtime/status`)
+        applyRuntimeResp(s)
+      } catch {
+        // transient — keep polling
+      }
+    }, 10000)
     return () => clearInterval(id)
   }, [app, runtimeStatus])
 

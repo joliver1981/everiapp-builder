@@ -38,6 +38,10 @@ export {
   type UseDecisionState,
 } from './aiDecide'
 export { reportBug, type ReportBugOptions, type ReportBugResult } from './reportBug'
+// Session-expiry contract: platform calls that hit 401 throw
+// SESSION_EXPIRED_MESSAGE and dispatch 'aihub:token-expired' on window —
+// apps/hosts can listen to prompt a reload (or re-mint a token).
+export { SESSION_EXPIRED_MESSAGE, notifySessionExpired } from './session'
 // Importing installs the fetch patch that stamps X-AIHub-Trace-Id on
 // platform-bound requests (one trace id per app session) and emits client
 // spans (dataset/app-DB calls, UI errors, interactions) to the platform.

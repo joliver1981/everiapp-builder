@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.dependencies import get_current_user, require_role
+from ..auth.dependencies import get_current_user, require_role, require_role_allow_scoped
 from ..auth.models import User
 from ..database import get_db
 from ..secrets.models import AuditLog
@@ -145,7 +145,12 @@ async def exec_(
 async def migrate(
     app_id: str,
     body: _MigrateIn,
-    user: User = Depends(require_role("admin")),
+    # allow_scoped: the SDK's useAppSchema runs this from INSIDE a previewed
+    # app with the injected (purpose=preview, app-scoped) token. Plain
+    # require_role would reject it and every preview boot would fail with
+    # "Database failed to initialize". The app_id scope check still confines
+    # the token to this app's own database.
+    user: User = Depends(require_role_allow_scoped("admin")),
     db: AsyncSession = Depends(get_db),
 ):
     """Apply a versioned set of migrations. Admin-only because schema changes

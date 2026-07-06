@@ -21,6 +21,7 @@
  */
 
 import { useCallback, useState } from 'react'
+import { hasSessionToken, sessionExpiredError } from './session'
 
 declare global {
   interface Window {
@@ -70,6 +71,10 @@ export async function aiDecide<T = unknown>(
     }
     throw err
   }
+  // 401 with a token attached → expired session: friendly message +
+  // 'aihub:token-expired' event. Token-less 401s (host never set one) and
+  // other HTTP errors still throw with the status (name drift = 404 etc.).
+  if (resp.status === 401 && hasSessionToken()) throw sessionExpiredError()
   if (!resp.ok) throw new Error(`aiDecide '${name}': HTTP ${resp.status}`)
   return (await resp.json()) as DecisionResult<T>
 }
