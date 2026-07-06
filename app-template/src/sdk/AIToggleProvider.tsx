@@ -7,24 +7,37 @@
  * 3. Sends context to the platform's AI Toggle backend
  * 4. Displays AI responses and executes action commands
  *
- * Usage:
- *   import { AIToggleProvider } from '@aihub/app-sdk'
+ * The app template mounts this once at the root (like BugReportButton), and
+ * it auto-decides whether to show the assistant from the app's widget config
+ * (the builder's AI toggle) — so it is safe to leave mounted on every app.
+ * Pass `enabled` only to override that auto-detection:
  *
- *   function App() {
- *     return (
- *       <AIToggleProvider>
- *         <Dashboard />
- *       </AIToggleProvider>
- *     )
- *   }
+ *   <AIToggleProvider>                  // follows the platform AI toggle
+ *   <AIToggleProvider enabled>          // always show (e.g. dev outside AIHub)
+ *   <AIToggleProvider enabled={false}>  // never show
  */
 
 import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { getDataSources } from './useAIDataSource'
 import { getActions, executeAction } from './useAIAction'
+import { SESSION_EXPIRED_MESSAGE, hasSessionToken, sessionExpiredError } from './session'
+
+// Same base-URL contract as every other SDK module: empty = same-origin
+// (preview/viewer behind the runtime proxy); deployed apps get the platform
+// origin baked in via VITE_AIHUB_BASE_URL. This module used to hard-code a
+// relative '/api/...' URL, which 404'd on every deployed app.
+const AIHUB_BASE: string =
+  ((import.meta as any).env?.VITE_AIHUB_BASE_URL as string | undefined) || ''
+
+interface WidgetConfig {
+  ai_toggle_enabled?: boolean
+}
 
 interface AIToggleProviderProps {
   children: ReactNode
+  /** Override auto-detection: true = always show the assistant, false =
+   *  never. Leave unset to follow the app's widget config (the AI toggle
+   *  in the builder top bar). */
   enabled?: boolean
 }
 
@@ -33,11 +46,29 @@ interface Message {
   content: string
 }
 
-export function AIToggleProvider({ children, enabled = true }: AIToggleProviderProps) {
+export function AIToggleProvider({ children, enabled }: AIToggleProviderProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [configEnabled, setConfigEnabled] = useState(false)
+
+  // Same self-gating contract as BugReportButton: unless the mount overrides
+  // via `enabled`, ask the platform whether the AI toggle is on for this app.
+  useEffect(() => {
+    if (enabled !== undefined) return
+    const appId =
+      (typeof window !== 'undefined' && (window as any).__AIHUB_APP_ID__) ||
+      document.querySelector('meta[name="aihub-app-id"]')?.getAttribute('content')
+    if (!appId) {
+      setConfigEnabled(false)
+      return
+    }
+    fetch(`${AIHUB_BASE}/api/apps/${appId}/widget-config`)
+      .then((r) => (r.ok ? (r.json() as Promise<WidgetConfig>) : null))
+      .then((cfg) => setConfigEnabled(!!cfg?.ai_toggle_enabled))
+      .catch(() => setConfigEnabled(false))
+  }, [enabled])
 
   // Listen for programmatic chat messages
   useEffect(() => {
@@ -66,7 +97,7 @@ export function AIToggleProvider({ children, enabled = true }: AIToggleProviderP
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (token) headers['Authorization'] = `Bearer ${token}`
 
-      const response = await fetch(`/api/ai-toggle/${appId}/chat`, {
+      const response = await fetch(`${AIHUB_BASE}/api/ai-toggle/${appId}/chat`, {
         method: 'POST',
         headers,
         credentials: 'include',
@@ -85,6 +116,10 @@ export function AIToggleProvider({ children, enabled = true }: AIToggleProviderP
         }),
       })
 
+      // 401 with a token attached = the injected session token expired —
+      // retrying can never succeed, so say the truth ("reload") instead of
+      // the generic "try again" below. Token-less 401s keep the generic path.
+      if (response.status === 401 && hasSessionToken()) throw sessionExpiredError()
       if (!response.ok) throw new Error('Failed to get AI response')
 
       const result = await response.json()
@@ -105,16 +140,17 @@ export function AIToggleProvider({ children, enabled = true }: AIToggleProviderP
         })
       )
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' },
-      ])
+      const content =
+        err instanceof Error && err.message === SESSION_EXPIRED_MESSAGE
+          ? SESSION_EXPIRED_MESSAGE
+          : 'Sorry, I encountered an error. Please try again.'
+      setMessages((prev) => [...prev, { role: 'assistant', content }])
     } finally {
       setIsLoading(false)
     }
   }, [])
 
-  if (!enabled) return <>{children}</>
+  if (!(enabled ?? configEnabled)) return <>{children}</>
 
   return (
     <>

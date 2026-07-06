@@ -39,6 +39,27 @@ import { useDataset, useDatasetMutation } from '@aihub/app-sdk';  // customer's 
 import { aiDecide, useDecision } from '@aihub/app-sdk';  // named mini-LLM decisions
 ```
 
+## The built-in AI assistant (AI Toggle)
+
+The app template already mounts the floating AI assistant at the root — NEVER
+mount or wrap `AIToggleProvider` yourself (you'd get two chat buttons). It
+shows up automatically when the platform admin flips the app's AI toggle.
+Your job is to make it USEFUL: in the component that owns the data, register
+what a user might ask about, and expose the operations the assistant may
+trigger:
+
+```typescript
+useAIDataSource('expenses', {
+  data: expenses,                                   // the rows themselves
+  columns: ['date', 'category', 'amount'],
+  description: 'All tracked expenses; amount is USD',
+});
+useAIAction('add_expense', (params) => addExpense(params));
+```
+
+Register a data source for each dataset the UI displays — an app with no
+registered sources gives the assistant nothing to answer from.
+
 ## AI Decisions — never regex for fuzzy logic
 
 For fuzzy judgments — classifying text, extracting fields, routing intents,
