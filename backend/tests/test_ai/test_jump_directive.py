@@ -41,6 +41,43 @@ def test_no_directives_returns_text_unchanged():
     assert cleaned == "nothing to jump to here"
 
 
+def test_bolded_directive_leaves_no_empty_husk():
+    """**[[jump:…]]** used to strip to a literal '****' once the chat rendered
+    real markdown (the old hand-rolled renderer happened to swallow it)."""
+    refs, cleaned = extract_jump_directives(
+        "- **[[jump:src/components/FileUploadButton.tsx]]** — new component"
+    )
+    assert refs == [{"path": "src/components/FileUploadButton.tsx", "start": None, "end": None}]
+    assert "*" not in cleaned
+    assert cleaned == "- — new component"
+
+
+def test_code_quoted_directive_leaves_no_backtick_husk():
+    _, cleaned = extract_jump_directives("See `[[jump:src/App.tsx:3]]` here")
+    assert "`" not in cleaned
+    assert cleaned == "See here"
+
+
+def test_nested_bold_code_directive_leaves_no_husk():
+    _, cleaned = extract_jump_directives("See **`[[jump:src/App.tsx]]`** here")
+    assert "*" not in cleaned and "`" not in cleaned
+    assert cleaned == "See here"
+
+
+def test_husk_unwrap_never_touches_unrelated_formatting():
+    text = "Keep **bold** and `code` and *em* while [[jump:src/App.tsx]] goes"
+    _, cleaned = extract_jump_directives(text)
+    assert "**bold**" in cleaned
+    assert "`code`" in cleaned
+    assert "*em*" in cleaned
+
+
+def test_adjacent_bolded_directives_leave_no_husk():
+    _, cleaned = extract_jump_directives("**[[jump:src/a.tsx]] [[jump:src/b.tsx]]** end")
+    assert "*" not in cleaned
+    assert cleaned == "end"
+
+
 def test_directive_in_code_body_stays_in_file_not_refs():
     """The contract: chat() runs extraction on the DESCRIPTION (prose), which
     parse_llm_response has already stripped of file bodies. So a [[jump:...]] that

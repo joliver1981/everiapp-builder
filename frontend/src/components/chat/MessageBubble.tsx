@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { User, Bot, AlertCircle, MapPin, ChevronRight, ChevronDown, Code2 } from 'lucide-react'
 import type { ChatMessage, CodeRef } from '@/types'
 import { cn } from '@/lib/utils'
@@ -107,48 +109,109 @@ function FormattedContent({ content }: { content: string }) {
   }
 
   // Split the content into "prose" segments and "fenced code block" segments
-  // BEFORE we do anything else. Otherwise the line-by-line + InlineFormatted
-  // path mangles ``` fences (a single ``` becomes a one-char inline code).
+  // BEFORE handing prose to react-markdown. The custom splitter (not the
+  // markdown parser) owns fences because it must also handle UNCLOSED fences
+  // mid-stream, route mermaid/mockup/svg to visual renderers, and collapse
+  // `// FILE:` blocks — none of which stock markdown gives us.
   const segments = splitFencedCodeBlocks(content)
-  const elements: React.ReactNode[] = []
 
-  segments.forEach((seg, segIdx) => {
-    if (seg.kind === 'code') {
-      // Visual blocks render as visuals: diagrams and screen mockups are the
-      // conversation's deliverable, not code to collapse.
-      if (seg.language === 'mermaid') {
-        elements.push(<MermaidBlock key={`code-${segIdx}`} code={seg.code} />)
-        return
-      }
-      if (seg.language === 'mockup' || seg.language === 'svg') {
-        elements.push(<MockupBlock key={`code-${segIdx}`} language={seg.language} code={seg.code} />)
-        return
-      }
-      elements.push(
-        <CollapsibleCode key={`code-${segIdx}`} language={seg.language || 'plaintext'} code={seg.code} />
-      )
-      return
-    }
-    // Prose segment — render line-by-line with inline formatting
-    const lines = seg.text.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      if (!line.trim()) {
-        // Collapse runs of empty lines into a single small gap, like the old code did
-        if (i > 0 && lines[i - 1]?.trim()) {
-          elements.push(<div key={`gap-${segIdx}-${i}`} className="h-2" />)
+  return (
+    <div>
+      {segments.map((seg, segIdx) => {
+        if (seg.kind === 'code') {
+          // Visual blocks render as visuals: diagrams and screen mockups are the
+          // conversation's deliverable, not code to collapse.
+          if (seg.language === 'mermaid') {
+            return <MermaidBlock key={`code-${segIdx}`} code={seg.code} />
+          }
+          if (seg.language === 'mockup' || seg.language === 'svg') {
+            return <MockupBlock key={`code-${segIdx}`} language={seg.language} code={seg.code} />
+          }
+          return (
+            <CollapsibleCode key={`code-${segIdx}`} language={seg.language || 'plaintext'} code={seg.code} />
+          )
         }
-        continue
-      }
-      elements.push(
-        <div key={`line-${segIdx}-${i}`} className="leading-relaxed">
-          <InlineFormatted text={line} />
-        </div>
-      )
-    }
-  })
+        return (
+          <ReactMarkdown key={`prose-${segIdx}`} remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+            {seg.text}
+          </ReactMarkdown>
+        )
+      })}
+    </div>
+  )
+}
 
-  return <div>{elements}</div>
+// Inline code — fenced blocks are already extracted by splitFencedCodeBlocks,
+// so a `language-` class or embedded newline here means an indented code block
+// (rare); let the <pre> override style those. Inline `src/…:line` tokens become
+// jump-to-code buttons, everything else a code chip.
+function MdCode({ className, children }: React.HTMLAttributes<HTMLElement>) {
+  const requestCodeNav = useChatStore((s) => s.requestCodeNav)
+  const text = String(children ?? '')
+
+  if (className?.includes('language-') || text.includes('\n')) {
+    return <code className={className}>{children}</code>
+  }
+
+  const ref = parseCodeRef(text)
+  if (ref) {
+    return (
+      <button
+        type="button"
+        onClick={() => requestCodeNav(ref)}
+        className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-mono text-primary underline-offset-2 transition-colors hover:bg-primary/20 hover:underline"
+        title={`Jump to ${ref.path}`}
+      >
+        {text}
+      </button>
+    )
+  }
+  return <code className="rounded bg-background/50 px-1.5 py-0.5 text-xs font-mono">{children}</code>
+}
+
+// Markdown element styling, scaled to the bubble's text-sm and kept compact.
+// Colors inherit from the bubble (user bubbles are primary-foreground text),
+// so use text-current/opacity rather than fixed foreground colors where the
+// element must work in both bubble variants.
+const MD_COMPONENTS: Components = {
+  code: MdCode,
+  p: ({ children }) => <p className="my-1 leading-relaxed first:mt-0 last:mb-0">{children}</p>,
+  h1: ({ children }) => <h1 className="mb-1 mt-3 text-base font-semibold first:mt-0">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-1 mt-3 text-base font-semibold first:mt-0">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h3>,
+  h4: ({ children }) => <h4 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h4>,
+  h5: ({ children }) => <h5 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h5>,
+  h6: ({ children }) => <h6 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h6>,
+  ul: ({ children }) => <ul className="my-1 list-disc space-y-0.5 pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-1 list-decimal space-y-0.5 pl-5">{children}</ol>,
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium underline underline-offset-2 hover:opacity-80"
+    >
+      {children}
+    </a>
+  ),
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-1 border-l-2 border-current/30 pl-3 opacity-80">{children}</blockquote>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-1 overflow-x-auto rounded-lg bg-background/60 p-3 text-xs font-mono">{children}</pre>
+  ),
+  hr: () => <hr className="my-2 border-current/20" />,
+  table: ({ children }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="w-full border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>
+  ),
+  td: ({ children }) => <td className="border border-border px-2 py-1 align-top">{children}</td>,
 }
 
 // Fenced code blocks render collapsed by default — a one-click chip instead of a
@@ -228,62 +291,4 @@ function splitFencedCodeBlocks(content: string): ContentSegment[] {
     segments.push({ kind: 'prose', text: content.slice(lastEnd) })
   }
   return segments
-}
-
-function InlineFormatted({ text }: { text: string }) {
-  const requestCodeNav = useChatStore((s) => s.requestCodeNav)
-  // Process inline formatting: **bold**, `code` (with `src/…:line` codes made clickable).
-  // The `code` regex requires NON-backtick content between the backticks, which
-  // prevents fenced-fence runs (```) from being misread as inline code. Fenced
-  // blocks are already pulled out one level up in splitFencedCodeBlocks().
-  const parts = text.split(/(\*\*.*?\*\*|`[^`\n]+?`)/g)
-
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          return (
-            <strong key={i} className="font-semibold">
-              {part.slice(2, -2)}
-            </strong>
-          )
-        }
-        // Inline code must be exactly: ` + 1+ non-backtick chars + `
-        // (not multiple backticks in a row — those are fence remnants)
-        if (
-          part.length >= 3
-          && part.startsWith('`')
-          && part.endsWith('`')
-          && !part.startsWith('``')
-          && !part.endsWith('``')
-        ) {
-          const inner = part.slice(1, -1)
-          // If it looks like an app file path (+ optional :line), make it a jump button.
-          const ref = parseCodeRef(inner)
-          if (ref) {
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => requestCodeNav(ref)}
-                className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-mono text-primary underline-offset-2 transition-colors hover:bg-primary/20 hover:underline"
-                title={`Jump to ${ref.path}`}
-              >
-                {inner}
-              </button>
-            )
-          }
-          return (
-            <code
-              key={i}
-              className="rounded bg-background/50 px-1.5 py-0.5 text-xs font-mono"
-            >
-              {inner}
-            </code>
-          )
-        }
-        return <span key={i}>{part}</span>
-      })}
-    </>
-  )
 }

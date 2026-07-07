@@ -173,7 +173,24 @@ async def proxy_app_ws(ws: WebSocket, app_id: str, path: str = ""):
     """WebSocket proxy — used by Vite HMR."""
     proc = runtime_manager.get_status(app_id)
     if not proc or proc.status != "running":
-        await ws.close(code=1011, reason="App not running")
+        # ACCEPT the handshake, then close cleanly — never reject it. Vite's
+        # "polling for restart" pings ARE WebSocket connects (subprotocol
+        # 'vite-ping') that count as success only when the socket OPENS; a
+        # pre-accept close() goes out as an HTTP 403 rejection, which the
+        # client reads as "still down" and retries every second, forever —
+        # one idle preview tab flooded the log with ~2k `connection rejected`
+        # lines after a backend restart emptied the runtime manager. Opening
+        # the socket lets the ping "succeed", so the page reloads once, lands
+        # on retry_page (bounded, self-healing HTTP polling), and the storm
+        # never starts.
+        requested = list(ws.scope.get("subprotocols") or [])
+        try:
+            # Echo a requested subprotocol or the browser fails the handshake
+            # before 'open' ever fires (per spec) — back to the reject storm.
+            await ws.accept(subprotocol=requested[0] if requested else None)
+            await ws.close(code=1012, reason="App not running")
+        except Exception:
+            pass
         return
     # Vite serves under base=/apps/{id}/, so its HMR websocket lives there too — forward the
     # full base-prefixed path (matches proxy_http). If HMR still can't reconnect, the preview

@@ -259,6 +259,67 @@ def test_wait_for_ready_requires_app_base_path_200():
         srv.shutdown()
 
 
+# ---- websocket storm regression: rejection must be accept-then-close ----
+# Vite's "polling for restart" pings are WebSocket connects (subprotocol
+# 'vite-ping') that count as success only when the socket OPENS. A pre-accept
+# close() goes out as an HTTP 403 rejection, which the client reads as "still
+# down" and retries every second, forever — one idle preview tab flooded the
+# backend log with ~2k `connection rejected` lines after a backend restart
+# emptied the runtime manager. Accept-then-close makes the ping succeed, the
+# page reloads once into retry_page (bounded HTTP polling), storm over.
+
+def test_ws_to_stopped_app_accepts_then_closes_cleanly(client, monkeypatch):
+    from fastapi import WebSocketDisconnect
+
+    monkeypatch.setattr(runtime_manager, "get_status", lambda _id: None)
+    with client.websocket_connect("/apps/stopped-app/", subprotocols=["vite-ping"]) as ws:
+        # The handshake must OPEN (subprotocol echoed, per spec) — a rejected
+        # upgrade would raise on connect and never reach here.
+        assert ws.accepted_subprotocol == "vite-ping"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_text()
+        assert exc.value.code == 1012
+
+
+def test_ws_to_starting_app_accepts_then_closes_cleanly(client, monkeypatch):
+    """The boot window (status='starting') must behave the same as stopped:
+    the reload lands on retry_page ('still starting'), which heals itself."""
+    from fastapi import WebSocketDisconnect
+
+    monkeypatch.setattr(
+        runtime_manager, "get_status",
+        lambda _id: SimpleNamespace(status="starting", port=None),
+    )
+    with client.websocket_connect("/apps/booting-app/", subprotocols=["vite-hmr"]) as ws:
+        assert ws.accepted_subprotocol == "vite-hmr"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_text()
+        assert exc.value.code == 1012
+
+
+def test_ws_to_dead_upstream_accepts_then_closes_cleanly(client, monkeypatch):
+    """Manager says 'running' but nothing listens on the Vite port (crashed
+    process, stale status): the relay's connect fails — that path must also
+    accept-then-close instead of rejecting, or the storm just moves here."""
+    import socket
+
+    from fastapi import WebSocketDisconnect
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    dead_port = s.getsockname()[1]
+    s.close()
+
+    monkeypatch.setattr(
+        runtime_manager, "get_status",
+        lambda _id: SimpleNamespace(status="running", port=dead_port),
+    )
+    with client.websocket_connect("/apps/dead-ws-app/", subprotocols=["vite-ping"]) as ws:
+        assert ws.accepted_subprotocol == "vite-ping"
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_text()
+
+
 # ---- websocket relay: vite-hmr subprotocol must survive both hops ----
 
 def test_ws_proxy_negotiates_vite_hmr_subprotocol(client, monkeypatch):

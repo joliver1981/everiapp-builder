@@ -18,8 +18,9 @@
     {
       "name": "marketplace",
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
-      "runtimeArgs": ["C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js", "--prefix", "C:\\src\\aihub-marketplace", "run", "dev", "--", "--port", "3000"],
-      "port": 3000
+      "runtimeArgs": ["C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js", "--prefix", "C:\\src\\aihub-marketplace", "run", "dev"],
+      "port": 3000,
+      "autoPort": true
     }
   ]
 }

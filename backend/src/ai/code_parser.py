@@ -49,7 +49,18 @@ def extract_jump_directives(text: str) -> tuple[list[dict], str]:
     if not refs:
         return [], text
 
-    cleaned = _JUMP_RE.sub("", text)
+    # Replace directives with a sentinel first: when the model wrapped one in
+    # emphasis or inline code (**[[jump:…]]**, `[[jump:…]]`), plain removal
+    # leaves an empty husk ("****", "``") that markdown renders as literal
+    # punctuation. Unwrapping is anchored to the sentinel so real formatting
+    # elsewhere in the prose is never touched.
+    cleaned = _JUMP_RE.sub("\x00", text)
+    cleaned = re.sub(r'\x00(?:\s*\x00)+', '\x00', cleaned)   # adjacent directives
+    for _ in range(2):  # twice: handles nesting like **`[[jump:…]]`**
+        cleaned = re.sub(r'`\s*\x00\s*`', '\x00', cleaned)
+        cleaned = re.sub(r'\*{1,2}\s*\x00\s*\*{1,2}', '\x00', cleaned)
+        cleaned = re.sub(r'_\s*\x00\s*_', '\x00', cleaned)
+    cleaned = cleaned.replace('\x00', '')
     # Tidy whitespace the removal left behind.
     cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)     # trailing spaces on a line
     cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)     # double spaces mid-line

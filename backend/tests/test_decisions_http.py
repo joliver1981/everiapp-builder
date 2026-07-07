@@ -107,6 +107,28 @@ def _wait_spans(app_id, n, timeout=4.0):
     raise AssertionError(f"expected {n} spans, got {_rows('SELECT kind FROM ai_spans WHERE app_id = ?', app_id)}")
 
 
+def _wait_span_kind(app_id, kind, timeout=4.0):
+    """Wait for a span of a SPECIFIC kind, not merely for span count >= 1.
+
+    `next(s for s in _wait_spans(app_id, 1) if s["kind"] == kind)` raced: a
+    decision emits an ai.decision parent AND an ai.call child via async
+    fire-and-forget flushes, and `_wait_spans(app_id, 1)` returns the moment
+    EITHER lands. Under load the child could arrive first, so the generator
+    found no ai.decision span yet and raised StopIteration. Poll for the kind
+    we actually assert on instead.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = _rows("SELECT * FROM ai_spans WHERE app_id = ? AND kind = ? ORDER BY created_at", app_id, kind)
+        if rows:
+            return rows[0]
+        time.sleep(0.05)
+    raise AssertionError(
+        f"no {kind} span for {app_id}; have "
+        f"{_rows('SELECT kind FROM ai_spans WHERE app_id = ?', app_id)}"
+    )
+
+
 def _decision_app(client, admin, name: str, manifest=None) -> str:
     """App with decisions declared through the REAL generation-save hook."""
     app_id = client.post("/api/apps", json={"name": name}, headers=admin).json()["id"]
@@ -219,7 +241,7 @@ def test_fallback_on_llm_error(client, admin, provider, monkeypatch):
     assert r.status_code == 200  # never a 5xx for LLM trouble
     assert r.json() == {"value": "new_query", "source": "fallback",
                         "latency_ms": r.json()["latency_ms"]}
-    span = next(s for s in _wait_spans(app_id, 1) if s["kind"] == "ai.decision")
+    span = _wait_span_kind(app_id, "ai.decision")
     assert span["status"] == "error" and "model down" in span["error"]
 
 
@@ -239,7 +261,7 @@ def test_timeout_error_is_self_documenting(client, admin, provider, monkeypatch)
     r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
                     json={"input": {}}, headers=admin)
     assert r.json()["source"] == "fallback"
-    span = next(s for s in _wait_spans(app_id, 1) if s["kind"] == "ai.decision")
+    span = _wait_span_kind(app_id, "ai.decision")
     assert "timed out after 1s" in span["error"]
     assert "timeout_seconds" in span["error"]  # the knob, by name
 
@@ -256,7 +278,7 @@ def test_fallback_on_schema_violation(client, admin, provider, monkeypatch):
                     json={"input": {}}, headers=admin)
     assert r.json()["source"] == "fallback"
     assert r.json()["value"] == "new_query"
-    span = next(s for s in _wait_spans(app_id, 1) if s["kind"] == "ai.decision")
+    span = _wait_span_kind(app_id, "ai.decision")
     assert "schema" in (span["error"] or "")
 
 
@@ -331,7 +353,7 @@ def test_truncated_output_error_is_self_documenting(client, admin, provider, mon
     r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
                     json={"input": {}}, headers=admin)
     assert r.json()["source"] == "fallback"
-    span = next(s for s in _wait_spans(app_id, 1) if s["kind"] == "ai.decision")
+    span = _wait_span_kind(app_id, "ai.decision")
     assert "truncated" in span["error"]
     assert "reduce the requested volume" in span["error"]
 

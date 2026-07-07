@@ -17,7 +17,7 @@
  *   <AIToggleProvider enabled={false}>  // never show
  */
 
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react'
 import { getDataSources } from './useAIDataSource'
 import { getActions, executeAction } from './useAIAction'
 import { SESSION_EXPIRED_MESSAGE, hasSessionToken, sessionExpiredError } from './session'
@@ -44,6 +44,121 @@ interface AIToggleProviderProps {
 interface Message {
   role: 'user' | 'assistant'
   content: string
+}
+
+// --- Markdown-lite ---------------------------------------------------------
+// Renders the subset of markdown the assistant actually emits: fenced code,
+// #-headings, bullet/numbered lists, **bold**, `inline code`. Deliberately
+// dependency-free: this file is re-vendored into EXISTING generated apps on
+// preview start, so it must never import a package their package.json might
+// not have (react-markdown would break every already-generated app).
+// Inline styles only, same as the rest of this widget.
+
+const CODE_STYLE: CSSProperties = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  fontSize: '11px',
+  background: 'rgba(0,0,0,0.4)',
+  borderRadius: '4px',
+  padding: '1px 5px',
+}
+
+function InlineMd({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*\n]+?\*\*|`[^`\n]+?`)/g)
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={i}>{part.slice(2, -2)}</strong>
+        }
+        if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) {
+          return (
+            <code key={i} style={CODE_STYLE}>
+              {part.slice(1, -1)}
+            </code>
+          )
+        }
+        return <span key={i}>{part}</span>
+      })}
+    </>
+  )
+}
+
+function MarkdownLite({ text }: { text: string }) {
+  // Fenced code blocks first (also tolerates an unclosed trailing fence),
+  // so list/heading parsing never runs inside code.
+  const fenceRe = /```\w*[ \t]*\n([\s\S]*?)(?:\n```|$)/g
+  const blocks: ReactNode[] = []
+  let lastEnd = 0
+  let key = 0
+  let m: RegExpExecArray | null
+
+  const pushProse = (prose: string) => {
+    for (const line of prose.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) {
+        blocks.push(<div key={key++} style={{ height: '6px' }} />)
+        continue
+      }
+      const heading = /^(#{1,4})\s+(.*)$/.exec(trimmed)
+      if (heading) {
+        blocks.push(
+          <div
+            key={key++}
+            style={{
+              fontWeight: 700,
+              fontSize: heading[1].length <= 2 ? '13px' : '12px',
+              margin: '6px 0 2px',
+            }}
+          >
+            <InlineMd text={heading[2]} />
+          </div>
+        )
+        continue
+      }
+      const bullet = /^[-*]\s+(.*)$/.exec(trimmed)
+      const numbered = /^(\d+)[.)]\s+(.*)$/.exec(trimmed)
+      if (bullet || numbered) {
+        blocks.push(
+          <div key={key++} style={{ display: 'flex', gap: '6px', margin: '1px 0 1px 4px' }}>
+            <span style={{ flexShrink: 0 }}>{bullet ? '•' : `${numbered![1]}.`}</span>
+            <span style={{ lineHeight: 1.5 }}>
+              <InlineMd text={bullet ? bullet[1] : numbered![2]} />
+            </span>
+          </div>
+        )
+        continue
+      }
+      blocks.push(
+        <div key={key++} style={{ lineHeight: 1.5 }}>
+          <InlineMd text={line} />
+        </div>
+      )
+    }
+  }
+
+  while ((m = fenceRe.exec(text)) !== null) {
+    if (m.index > lastEnd) pushProse(text.slice(lastEnd, m.index))
+    blocks.push(
+      <pre
+        key={key++}
+        style={{
+          ...CODE_STYLE,
+          display: 'block',
+          padding: '8px',
+          borderRadius: '8px',
+          margin: '6px 0',
+          overflowX: 'auto',
+          whiteSpace: 'pre',
+        }}
+      >
+        {m[1]}
+      </pre>
+    )
+    lastEnd = m.index + m[0].length
+  }
+  if (lastEnd < text.length) pushProse(text.slice(lastEnd))
+
+  return <>{blocks}</>
 }
 
 export function AIToggleProvider({ children, enabled }: AIToggleProviderProps) {
@@ -229,19 +344,22 @@ export function AIToggleProvider({ children, enabled }: AIToggleProviderProps) {
                   textAlign: msg.role === 'user' ? 'right' : 'left',
                 }}
               >
-                <span
+                {/* div, not span: assistant bubbles contain block elements
+                    (headings, lists, code blocks) from MarkdownLite */}
+                <div
                   style={{
                     display: 'inline-block',
                     padding: '8px 12px',
                     borderRadius: '12px',
                     fontSize: '12px',
                     maxWidth: '85%',
+                    textAlign: 'left',
                     background: msg.role === 'user' ? '#3b82f6' : '#27272a',
                     color: '#fafafa',
                   }}
                 >
-                  {msg.content}
-                </span>
+                  {msg.role === 'assistant' ? <MarkdownLite text={msg.content} /> : msg.content}
+                </div>
               </div>
             ))}
             {isLoading && (

@@ -22,6 +22,18 @@ dependencies = [
     "playwright>=1.49.0",
     "click>=8.0",
     "pyyaml>=6.0",
+    # --- SSO, bundled by default -------------------------------------------
+    # Every advertised SSO method works with zero admin action — nobody
+    # hand-installs auth libraries. OIDC needs nothing beyond pyjwt + httpx +
+    # cryptography (already above). LDAP/AD uses pure-Python ldap3. SAML pulls
+    # lxml + xmlsec (C extensions), but prebuilt wheels cover Windows, macOS,
+    # and manylinux for cp312 — `pip install` needs no compiler or OS package
+    # on those. Only exotic targets (musl/Alpine, a brand-new Python with no
+    # published wheel yet) would fall back to building xmlsec and need the
+    # system libxmlsec1-dev + pkg-config. The routes still degrade to a clean
+    # 501 if python3-saml is ever stripped out (see auth/saml/service.py).
+    "ldap3>=2.9.0",
+    "python3-saml>=1.16.0",
 ]
 
 [project.scripts]
@@ -33,12 +45,13 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
 ]
+# LDAP/AD and SAML are now in the base `dependencies` above (bundled by
+# default). These extras are retained only as backward-compatible aliases so
+# any existing `pip install -e .[ldap]` / `.[saml]` commands still resolve —
+# they install nothing beyond what the base already pulls in.
 ldap = [
     "ldap3>=2.9.0",
 ]
-# SAML 2.0 SSO (SP side). Opt-in: pulls lxml + xmlsec (C extensions). On
-# Windows, prebuilt wheels for `xmlsec` + `lxml` make `pip install .[saml]`
-# work without a toolchain. Install with:  pip install -e .[saml]
 saml = [
     "python3-saml>=1.16.0",
 ]

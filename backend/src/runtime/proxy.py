@@ -223,6 +223,7 @@ async def proxy_websocket(ws: WebSocket, port: int, path: str) -> None:
     # Vite's pick back to the client.
     requested = list(ws.scope.get("subprotocols") or [])
     target_url = f"ws://127.0.0.1:{port}/{path}"
+    accepted = False
 
     try:
         async with websockets.connect(
@@ -238,6 +239,7 @@ async def proxy_websocket(ws: WebSocket, port: int, path: str) -> None:
             max_size=None,
         ) as upstream:
             await ws.accept(subprotocol=upstream.subprotocol)
+            accepted = True
 
             async def client_to_upstream():
                 try:
@@ -274,6 +276,16 @@ async def proxy_websocket(ws: WebSocket, port: int, path: str) -> None:
 
     except Exception as e:
         logger.debug("WebSocket proxy error for port %d: %s", port, e)
+        if not accepted:
+            # Upstream unreachable while the manager still says "running"
+            # (crashed Vite, stale status): same storm risk as the router's
+            # not-running path — a pre-accept close is an HTTP 403 rejection
+            # that Vite's once-a-second reconnect pings retry forever. Accept
+            # so the ping "succeeds" and the page reloads into retry_page.
+            try:
+                await ws.accept(subprotocol=requested[0] if requested else None)
+            except Exception:
+                pass
     finally:
         try:
             await ws.close()
