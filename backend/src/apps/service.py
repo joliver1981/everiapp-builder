@@ -3,7 +3,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, delete
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import App, AppSetting, AppPermission
@@ -263,6 +263,28 @@ class AppsService:
             # Continue with deletion even if files can't be removed
             pass
 
+        # Explicitly clear decision rows first. Their FK to apps was declared
+        # without ondelete=CASCADE (and SQLite can't retrofit that onto an
+        # existing DB), so with foreign_keys=ON the final DELETE FROM apps hits
+        # a FOREIGN KEY constraint failure for any app that registered a
+        # decision — which is every prompt-comparison / aiDecide app. Delete
+        # the decision caches, then the decisions, then the app.
+        from ..decisions.models import AppDecision, DecisionCache
+        decision_ids = (await db.execute(
+            select(AppDecision.id).where(AppDecision.app_id == app_id)
+        )).scalars().all()
+        if decision_ids:
+            await db.execute(delete(DecisionCache).where(
+                DecisionCache.decision_id.in_(decision_ids)))
+            await db.execute(delete(AppDecision).where(AppDecision.app_id == app_id))
+
+        # Same reasoning for app↔connection bindings (their FK to apps has no
+        # cascade) and app↔dataset bindings — clear them before deleting the app.
+        from ..connections.models import AppConnectionBinding
+        from ..datasets.models import AppDatasetBinding
+        await db.execute(delete(AppConnectionBinding).where(AppConnectionBinding.app_id == app_id))
+        await db.execute(delete(AppDatasetBinding).where(AppDatasetBinding.app_id == app_id))
+
         await db.delete(app)
         await db.commit()
         return True
@@ -307,7 +329,16 @@ class AppsService:
         app_dir = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
 
         if template_dir.exists():
-            shutil.copytree(template_dir, app_dir, dirs_exist_ok=True)
+            # node_modules (~140MB / 11.5k files in a dev checkout) is NOT
+            # copied — it made POST /api/apps block ~40s. The first consumer
+            # that needs dependencies provisions it instead: preview start
+            # (runtime/manager._do_start) and the AI verifier (stage 0) both
+            # try the offline template copy via apps.provisioning and fall
+            # back to npm install if the app's declared deps drifted.
+            shutil.copytree(
+                template_dir, app_dir, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("node_modules"),
+            )
         else:
             # Create minimal structure if template doesn't exist yet
             app_dir.mkdir(parents=True, exist_ok=True)

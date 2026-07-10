@@ -28,11 +28,15 @@ logger = logging.getLogger(__name__)
 # model *generating* content (not just classifying) routinely needs 20-60s.
 DEFAULT_TIMEOUT_SECONDS = 30
 _TIMEOUT_MAX = 120
-# Output ceiling per invocation. 1024 proved too small in real testing —
-# generate-style decisions (multiple prompts/arrays) got truncated mid-JSON
-# and burned their fallback on an "unparseable" answer.
-DECISION_MAX_TOKENS = 4096
-_INPUT_MAX_CHARS = 20_000
+# Default output ceiling per invocation. A CAP, not a target — a classifier
+# emitting one word is unaffected, so a generous default is free. 4096 truncated
+# generative decisions (multiple prompts/arrays, e.g. side-by-side model
+# comparisons) mid-JSON and burned their fallback on an "unparseable" answer.
+# Overridable per decision (manifest/PUT), clamped to _MAX_TOKENS_MAX. Loose by
+# default; an app that wants to bound cost dials it DOWN.
+DEFAULT_DECISION_MAX_TOKENS = 16384
+_MAX_TOKENS_MIN = 16
+_MAX_TOKENS_MAX = 64000
 _NAME_MAX = 100
 
 _TYPE_MAP = {
@@ -102,6 +106,8 @@ async def upsert_from_manifest(db: AsyncSession, app_id: str, entries: list[dict
                 row.cache_ttl_seconds = max(0, entry["cache_ttl_seconds"])
             if isinstance(entry.get("timeout_seconds"), int):
                 row.timeout_seconds = min(max(1, entry["timeout_seconds"]), _TIMEOUT_MAX)
+            if isinstance(entry.get("max_output_tokens"), int):
+                row.max_output_tokens = min(max(_MAX_TOKENS_MIN, entry["max_output_tokens"]), _MAX_TOKENS_MAX)
         # Contract fields stay generator-owned — but never regress to nothing
         # when a later manifest omits the schema.
         row.description = entry.get("description", row.description or "")[:300]
@@ -160,7 +166,8 @@ async def get_decision(db: AsyncSession, app_id: str, name: str) -> AppDecision 
 async def update_prompt(db: AsyncSession, decision: AppDecision, *, prompt: str | None,
                         model: str | None, temperature: float | None,
                         cache_ttl_seconds: int | None,
-                        timeout_seconds: int | None = None) -> None:
+                        timeout_seconds: int | None = None,
+                        max_output_tokens: int | None = None) -> None:
     """Prompt-as-data: takes effect on the NEXT invocation, zero rebuild.
     Cache keys include the prompt hash, so edits invalidate implicitly."""
     if prompt is not None and prompt.strip():
@@ -173,6 +180,8 @@ async def update_prompt(db: AsyncSession, decision: AppDecision, *, prompt: str 
         decision.cache_ttl_seconds = max(0, cache_ttl_seconds)
     if timeout_seconds is not None:
         decision.timeout_seconds = min(max(1, timeout_seconds), _TIMEOUT_MAX)
+    if max_output_tokens is not None:
+        decision.max_output_tokens = min(max(_MAX_TOKENS_MIN, max_output_tokens), _MAX_TOKENS_MAX)
     await db.commit()
 
 
@@ -252,9 +261,21 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
         return {"value": value, "source": source, "latency_ms": latency_ms}
 
     input_json = _canonical(input_obj)
-    if len(input_json) > _INPUT_MAX_CHARS:
+    # Optional admin guardrail — 0 = unlimited (the default). There is no
+    # intrinsic reason to cap decision input: the model's own context window is
+    # the real limit and the provider errors cleanly if it's exceeded. This
+    # exists only so an operator who wants cost control can opt into one.
+    from ..platform_settings.service import get_setting
+    _max_input = await get_setting(db, "decision_max_input_chars")
+    try:
+        _max_input = int(_max_input)
+    except (TypeError, ValueError):
+        _max_input = 0
+    if _max_input > 0 and len(input_json) > _max_input:
         return _result(fallback, "fallback", status="error",
-                       error=f"input too large ({len(input_json)} chars)")
+                       error=f"input too large ({len(input_json)} chars > platform "
+                             f"decision_max_input_chars={_max_input}); raise it or set it "
+                             f"to 0 (unlimited) in Platform → Settings → AI decisions")
 
     # 1. Exact-match cache (user-scoped; prompt hash in the key).
     key = None
@@ -287,6 +308,18 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
         {"role": "user", "content": input_json},
     ]
 
+    # Effective output ceiling: an explicit per-decision override wins; otherwise
+    # inherit the admin-tunable platform default (Platform → Settings); the code
+    # constant is the last-resort floor. Clamped defensively either way.
+    from ..platform_settings.service import get_setting
+    platform_default = await get_setting(db, "decision_max_output_tokens")
+    effective_max_tokens = (
+        decision.max_output_tokens
+        or (int(platform_default) if platform_default else 0)
+        or DEFAULT_DECISION_MAX_TOKENS
+    )
+    effective_max_tokens = min(max(_MAX_TOKENS_MIN, effective_max_tokens), _MAX_TOKENS_MAX)
+
     # 3. The call — bounded, instrumented (the gateway emits the child ai.call
     #    span parented to this decision's span), metered.
     from ..llm_compat import acompletion
@@ -296,7 +329,7 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
             messages=messages,
             api_key=provider_config["api_key"],
             base_url=provider_config.get("base_url"),
-            max_tokens=DECISION_MAX_TOKENS,
+            max_tokens=effective_max_tokens,
             temperature=decision.temperature,
             aihub_span={"app_id": decision.app_id, "user_id": user_id,
                         "purpose": "decision", "name": decision.name,
@@ -329,9 +362,12 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
         finish = getattr(response.choices[0], "finish_reason", None)
         if finish == "length":
             return _result(fallback, "fallback", status="error",
-                           error=f"model output truncated at {DECISION_MAX_TOKENS} tokens "
-                                 f"mid-JSON — this decision asks for too much output; "
-                                 f"reduce the requested volume in its prompt")
+                           error=f"model output truncated at {effective_max_tokens} tokens "
+                                 f"mid-JSON — raise this decision's max_output_tokens "
+                                 f"(decisions.json or PUT /api/decisions/{decision.app_id}/"
+                                 f"{decision.name}), or raise the platform default in "
+                                 f"Platform → Settings → AI decisions (max {_MAX_TOKENS_MAX}); "
+                                 f"or reduce the requested volume in its prompt")
         return _result(fallback, "fallback", status="error",
                        error=f"unparseable model output: {raw[:200]!r}")
     if not _validate_output(value, decision.output_schema_json):

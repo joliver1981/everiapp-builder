@@ -19,6 +19,11 @@ os.environ.setdefault("DEBUG", "true")
 os.environ.setdefault(
     "MASTER_ENCRYPTION_KEY", "Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm8="
 )
+# NOTE: POST /api/apps no longer copies the template's ~140MB node_modules at
+# scaffold time (it cost ~40s per app creation and once dominated this suite's
+# runtime). Dependencies are provisioned lazily by preview start / the AI
+# verifier via src/apps/provisioning.py — no test starts a real vite process,
+# so the suite never pays it.
 
 
 @pytest.fixture

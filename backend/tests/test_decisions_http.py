@@ -342,7 +342,8 @@ def test_fenced_json_answer_accepted(client, admin, provider, monkeypatch):
 
 def test_truncated_output_error_is_self_documenting(client, admin, provider, monkeypatch):
     """The real-world failure: output cut off at max_tokens mid-JSON. The
-    span must say 'truncated' and name the remedy — not just 'unparseable'."""
+    span must say 'truncated', name the knob (max_output_tokens) AND how to
+    raise it — not just 'unparseable' or 'reduce your prompt'."""
     import src.llm_compat as llm_compat
 
     async def truncated(kwargs):
@@ -355,7 +356,91 @@ def test_truncated_output_error_is_self_documenting(client, admin, provider, mon
     assert r.json()["source"] == "fallback"
     span = _wait_span_kind(app_id, "ai.decision")
     assert "truncated" in span["error"]
+    assert "max_output_tokens" in span["error"]          # the knob, by name
     assert "reduce the requested volume" in span["error"]
+
+
+def test_default_output_ceiling_inherits_platform_default(client, admin, provider, fake_llm):
+    """A decision declared without max_output_tokens stores NULL (inherit) and
+    uses the generous platform default (16384) at call time — not the old
+    brittle 4096."""
+    app_id = _decision_app(client, admin, "Default Ceiling App")
+    d = client.get(f"/api/decisions/{app_id}", headers=admin).json()[0]
+    assert d["max_output_tokens"] is None            # inherits, not pinned
+
+    client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                json={"input": {}}, headers=admin)
+    assert fake_llm[-1]["max_tokens"] == 16384       # the platform default
+
+
+def test_admin_platform_default_is_editable_and_applies(client, admin, provider, fake_llm):
+    """The knob the AI tells users to ask their admin about: raising the
+    platform-wide decision ceiling in Settings immediately raises the effective
+    cap for every decision that inherits (max_output_tokens NULL)."""
+    app_id = _decision_app(client, admin, "Inherit Platform App")
+    try:
+        r = client.put("/api/admin/settings", json={"decision_max_output_tokens": 40000}, headers=admin)
+        assert r.status_code == 200, r.text
+        assert r.json()["decision_max_output_tokens"] == 40000
+
+        client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {}}, headers=admin)
+        assert fake_llm[-1]["max_tokens"] == 40000   # inherited the raised default
+    finally:
+        client.put("/api/admin/settings", json={"decision_max_output_tokens": 16384}, headers=admin)
+
+
+def test_per_decision_override_beats_platform_default(client, admin, provider, fake_llm):
+    """An explicit per-decision max_output_tokens wins over the platform default."""
+    manifest = [dict(MANIFEST[0], max_output_tokens=8000)]
+    app_id = _decision_app(client, admin, "Override Wins App", manifest=manifest)
+    try:
+        client.put("/api/admin/settings", json={"decision_max_output_tokens": 40000}, headers=admin)
+        client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {}}, headers=admin)
+        assert fake_llm[-1]["max_tokens"] == 8000    # the decision's own value, not 40000
+    finally:
+        client.put("/api/admin/settings", json={"decision_max_output_tokens": 16384}, headers=admin)
+
+
+def test_manifest_can_raise_output_ceiling(client, admin, provider, fake_llm):
+    """A generative decision (side-by-side model comparison) declares a big
+    ceiling in decisions.json; it reaches the LLM call so output isn't truncated."""
+    manifest = [dict(MANIFEST[0], max_output_tokens=48000)]
+    app_id = _decision_app(client, admin, "Big Ceiling App", manifest=manifest)
+    assert client.get(f"/api/decisions/{app_id}", headers=admin).json()[0]["max_output_tokens"] == 48000
+
+    client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                json={"input": {}}, headers=admin)
+    assert fake_llm[-1]["max_tokens"] == 48000
+
+
+def test_output_ceiling_editable_via_put_within_bounds(client, admin, provider):
+    """PUT sets max_output_tokens (takes effect next invocation). The API bound
+    is a sane ceiling above any current model's output — over it is a clean 422,
+    not a silent truncation-to-fallback later."""
+    app_id = _decision_app(client, admin, "Editable Ceiling App")
+    # A modest bound set by an operator who WANTS to cap cost is honored.
+    r = client.put(f"/api/decisions/{app_id}/classify_question",
+                   json={"max_output_tokens": 512}, headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json()["max_output_tokens"] == 512
+
+    # Above the platform ceiling: rejected up front (422), not accepted then
+    # truncated at model time.
+    r = client.put(f"/api/decisions/{app_id}/classify_question",
+                   json={"max_output_tokens": 999999}, headers=admin)
+    assert r.status_code == 422
+
+
+def test_manifest_output_ceiling_clamps_silently(client, admin, provider):
+    """Generated decisions.json is code — an out-of-range value must clamp to the
+    platform max, never fail the manifest (which would drift the registry)."""
+    manifest = [dict(MANIFEST[0], max_output_tokens=999999)]
+    app_id = _decision_app(client, admin, "Clamp Manifest App", manifest=manifest)
+    d = client.get(f"/api/decisions/{app_id}", headers=admin).json()[0]
+    assert d["name"] == "classify_question"        # manifest still registered
+    assert d["max_output_tokens"] == 64000         # clamped to the ceiling
 
 
 def test_bare_enum_answer_accepted(client, admin, provider, monkeypatch):
@@ -445,6 +530,55 @@ def test_sync_endpoint_heals_registry_drift(client, admin, provider):
         rt.runtime_manager.start_app = orig
     assert [d["name"] for d in client.get(f"/api/decisions/{app2}", headers=admin).json()] \
         == ["classify_question"]
+
+
+def test_decision_input_is_unlimited_by_default(client, admin, provider, fake_llm):
+    """No decision INPUT cap out of the box — a large input reaches the model
+    instead of bouncing off the old hardcoded 20,000-char ceiling."""
+    app_id = _decision_app(client, admin, "Big Input App")
+    big = "x" * 50_000  # far above the removed 20k hardcoded cap
+    r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {"doc": big}}, headers=admin)
+    assert r.json()["source"] == "llm"          # accepted, not "input too large"
+    assert fake_llm, "the large input should have reached the model"
+
+
+def test_admin_can_opt_into_a_decision_input_cap(client, admin, provider, fake_llm):
+    """An operator who wants cost control can set an input cap; over it, the
+    decision returns its fallback with a self-documenting error naming the knob."""
+    app_id = _decision_app(client, admin, "Capped Input App")
+    try:
+        client.put("/api/admin/settings", json={"decision_max_input_chars": 100}, headers=admin)
+        r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                        json={"input": {"doc": "y" * 500}}, headers=admin)
+        assert r.json()["source"] == "fallback"
+        span = _wait_span_kind(app_id, "ai.decision")
+        assert "input too large" in span["error"]
+        assert "decision_max_input_chars" in span["error"]   # the knob, by name
+    finally:
+        client.put("/api/admin/settings", json={"decision_max_input_chars": 0}, headers=admin)
+
+
+def test_delete_app_with_decisions(client, admin, provider, fake_llm):
+    """Deleting an app that registered a decision must succeed. The
+    app_decisions FK has no ondelete=CASCADE, so DELETE FROM apps used to hit a
+    FOREIGN KEY constraint failure (500) for every aiDecide app — delete_app now
+    clears decision rows first."""
+    manifest = [dict(MANIFEST[0], cache_ttl_seconds=300)]
+    app_id = _decision_app(client, admin, "Deletable Decision App", manifest=manifest)
+    # Invoke once (fake LLM) so a decision_cache row exists too — the deeper child.
+    r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {"q": "cache me"}}, headers=admin)
+    assert r.json()["source"] == "llm"
+    decision_ids = [row["id"] for row in _rows("SELECT id FROM app_decisions WHERE app_id = ?", app_id)]
+    assert decision_ids and _rows(
+        "SELECT id FROM decision_cache WHERE decision_id = ?", decision_ids[0])
+
+    assert client.delete(f"/api/apps/{app_id}", headers=admin).status_code == 204
+    # App and its decision + cache rows are gone (no orphans, no 500).
+    assert client.get(f"/api/apps/{app_id}", headers=admin).status_code == 404
+    assert _rows("SELECT id FROM app_decisions WHERE app_id = ?", app_id) == []
+    assert _rows("SELECT id FROM decision_cache WHERE decision_id = ?", decision_ids[0]) == []
 
 
 def test_auth_and_unknowns(client, admin, provider):

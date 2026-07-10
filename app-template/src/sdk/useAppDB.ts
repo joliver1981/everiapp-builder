@@ -80,10 +80,12 @@ async function postDb<T>(path: string, payload: unknown): Promise<T> {
 // useAppSchema runs CREATE TABLE as an async migration on mount; useAppQuery
 // runs its SELECT on mount too. Without coordination the SELECT can reach the
 // backend before the table exists → "no such table" 400 on first load. This
-// module-level gate makes every useAppQuery wait for the (single) schema
-// migration to finish first — but never hangs apps that declare no schema.
+// module-level gate makes every useAppQuery wait for ALL declared schema
+// migrations to finish first (an app may declare schemas from several
+// hooks/components) — but never hangs apps that declare no schema.
 // ---------------------------------------------------------------------------
 let _schemaRegistered = false
+let _schemaPendingCount = 0
 let _schemaSettle: Promise<void> | null = null
 let _resolveSchema: (() => void) | null = null
 
@@ -97,12 +99,14 @@ function _ensureSchemaPromise(): void {
 
 function _markSchemaRegistered(): void {
   _schemaRegistered = true
+  _schemaPendingCount++
   _ensureSchemaPromise()
 }
 
 function _markSchemaSettled(): void {
   _ensureSchemaPromise()
-  _resolveSchema?.()
+  _schemaPendingCount--
+  if (_schemaPendingCount <= 0) _resolveSchema?.()
 }
 
 async function _waitForSchema(): Promise<void> {
@@ -117,8 +121,20 @@ async function _waitForSchema(): Promise<void> {
   }
 }
 
+/** Full response envelope for a query. `truncated` is true when the row cap was
+ *  hit — raise `limit` (or page) to get the rest. `result.rows === data`. */
+export interface AppQueryEnvelope<TRow> {
+  rows: TRow[]
+  columns: string[]
+  row_count: number
+  truncated: boolean
+}
+
 export interface AppQueryResult<TRow> {
   data: TRow[] | null
+  /** The full response envelope (columns, row_count, truncated). Null until the
+   *  first successful run. Check `result.truncated` to detect a capped result. */
+  result: AppQueryEnvelope<TRow> | null
   loading: boolean
   error: Error | null
   refetch: () => void
@@ -129,6 +145,9 @@ interface AppQueryOptions {
   scope?: 'all' | 'user'
   /** Skip the auto-run on mount; call refetch() to run. */
   skip?: boolean
+  /** Max rows to return. Omitted → a generous server default. Raise for large
+   *  result sets; the server clamps to an absolute ceiling. */
+  limit?: number
 }
 
 /** Run a SELECT against the app's own SQLite store. */
@@ -138,6 +157,7 @@ export function useAppQuery<TRow = Record<string, unknown>>(
   options: AppQueryOptions = {},
 ): AppQueryResult<TRow> {
   const [data, setData] = useState<TRow[] | null>(null)
+  const [result, setResult] = useState<AppQueryEnvelope<TRow> | null>(null)
   const [loading, setLoading] = useState(!options.skip)
   const [error, setError] = useState<Error | null>(null)
   const paramsKey = JSON.stringify(params)
@@ -148,19 +168,23 @@ export function useAppQuery<TRow = Record<string, unknown>>(
     setError(null)
     try {
       await _waitForSchema()
-      const res = await postDb<{ rows: TRow[] }>('query', {
+      const res = await postDb<AppQueryEnvelope<TRow>>('query', {
         sql,
         params,
         scope: options.scope ?? 'all',
+        ...(options.limit != null ? { limit: options.limit } : {}),
       })
-      if (mounted.current) setData(res.rows)
+      if (mounted.current) {
+        setData(res.rows)
+        setResult(res)
+      }
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e : new Error(String(e)))
     } finally {
       if (mounted.current) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sql, paramsKey, options.scope])
+  }, [sql, paramsKey, options.scope, options.limit])
 
   useEffect(() => {
     mounted.current = true
@@ -173,7 +197,7 @@ export function useAppQuery<TRow = Record<string, unknown>>(
     if (!options.skip) run()
   }, [run, options.skip])
 
-  return { data, loading, error, refetch: run }
+  return { data, result, loading, error, refetch: run }
 }
 
 export interface AppMutationResult {
@@ -206,11 +230,32 @@ export function useAppMutation(sql: string) {
   return { mutate, loading, error }
 }
 
+// Tiny stable content hash (FNV-1a, hex) — gives each schema declaration its
+// own migration name so independent useAppSchema calls don't collide.
+function _fnv1a(s: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
+interface MigrateResponse {
+  applied_versions: number[]
+  refused?: { version: number; name: string; reason: string }[]
+  current_version?: number
+  error?: string
+}
+
 /**
- * Declare the app's schema. On first mount the SDK runs it as a migration
- * (version 1). For evolving schemas, prefer numbered migrations applied by
- * an admin via the platform — but useAppSchema is the quick path for simple
- * apps. Idempotent: CREATE TABLE IF NOT EXISTS means re-runs are no-ops.
+ * Declare (part of) the app's schema. On first mount the SDK applies it as a
+ * migration; the migration's identity comes from the SQL's content, so an app
+ * may declare schemas from SEVERAL hooks/components — each declaration is
+ * applied independently, exactly once. For evolving schemas, prefer numbered
+ * migrations applied by an admin via the platform — but useAppSchema is the
+ * quick path for simple apps. Idempotent: CREATE TABLE IF NOT EXISTS means
+ * re-runs are no-ops.
  */
 export function useAppSchema(schemaSql: string) {
   const [ready, setReady] = useState(false)
@@ -223,12 +268,22 @@ export function useAppSchema(schemaSql: string) {
     _markSchemaRegistered()
     ;(async () => {
       try {
-        await postDb('migrate', {
-          migrations: [{ version: 1, name: 'app_schema', sql: schemaSql }],
+        const res = await postDb<MigrateResponse>('migrate', {
+          migrations: [
+            { version: 1, name: `app_schema_${_fnv1a(schemaSql)}`, sql: schemaSql },
+          ],
         })
+        // A refused/errored migration comes back HTTP 200 — surface it loudly
+        // instead of letting the app run against tables that don't exist.
+        if (res.error || (res.refused && res.refused.length > 0)) {
+          const reason = res.error ?? res.refused!.map((r) => r.reason).join('; ')
+          throw new Error(`useAppSchema: schema was not applied — ${reason}`)
+        }
         setReady(true)
       } catch (e) {
-        setError(e instanceof Error ? e : new Error(String(e)))
+        const err = e instanceof Error ? e : new Error(String(e))
+        console.error('[AIHub SDK] useAppSchema failed:', err.message)
+        setError(err)
       } finally {
         _markSchemaSettled()
       }

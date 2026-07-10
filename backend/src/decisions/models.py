@@ -46,6 +46,13 @@ class AppDecision(Base):
     # decisions (produce content, not just classify) need far more than a
     # classifier — a big model writing a test scenario can take 20-60s.
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    # LLM output ceiling per invocation — a CAP, not a target: a classifier
+    # emitting one word is unaffected. NULL = inherit the admin-tunable platform
+    # default (`decision_max_output_tokens`, Platform → Settings); a value here
+    # is an explicit per-decision override (manifest/PUT). A hardcoded 4096 once
+    # truncated generative decisions (multi-prompt/array outputs, e.g. a
+    # side-by-side model comparison) mid-JSON and burned their fallback.
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

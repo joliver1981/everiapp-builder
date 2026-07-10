@@ -66,10 +66,15 @@ export function DevSkillsModal({ onClose }: { onClose: () => void }) {
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={12}
-              maxLength={8000}
+              maxLength={40000}
               placeholder={'Examples:\n- When using the app\'s SQLite store, optimize for concurrent writes (WAL) by default.\n- Every list view gets a loading skeleton and an empty state.\n- Prefer aiDecide over regex for any fuzzy matching.\n- Use my company\'s date format: YYYY-MM-DD.'}
               className="w-full rounded-lg border border-input bg-secondary p-3 font-mono text-xs leading-5 focus:outline-none focus:ring-2 focus:ring-ring"
             />
+          )}
+          {!loading && (
+            <p className="mt-1 text-right text-[11px] text-muted-foreground">
+              {text.length.toLocaleString()} / 40,000
+            </p>
           )}
           {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
           <p className="mt-3 text-[11px] text-muted-foreground">

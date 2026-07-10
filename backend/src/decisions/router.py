@@ -29,6 +29,8 @@ class DecisionUpdate(BaseModel):
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     cache_ttl_seconds: int | None = Field(None, ge=0, le=30 * 86400)
     timeout_seconds: int | None = Field(None, ge=1, le=120)
+    # Bounds mirror service._MAX_TOKENS_MIN/_MAX (a cap, not a target).
+    max_output_tokens: int | None = Field(None, ge=16, le=64000)
 
 
 def _to_response(d) -> dict:
@@ -41,6 +43,7 @@ def _to_response(d) -> dict:
         "model": d.model, "temperature": d.temperature,
         "cache_ttl_seconds": d.cache_ttl_seconds,
         "timeout_seconds": d.timeout_seconds,
+        "max_output_tokens": d.max_output_tokens,
         "updated_at": d.updated_at.isoformat() if d.updated_at else None,
     }
 
@@ -114,5 +117,6 @@ async def update_decision(
         db, decision, prompt=body.prompt, model=body.model,
         temperature=body.temperature, cache_ttl_seconds=body.cache_ttl_seconds,
         timeout_seconds=body.timeout_seconds,
+        max_output_tokens=body.max_output_tokens,
     )
     return _to_response(decision)

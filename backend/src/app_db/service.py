@@ -101,6 +101,11 @@ def _open(app_id: str) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 # Schema migration safety
 # ---------------------------------------------------------------------------
+def _hash_sql(sql: str) -> str:
+    import hashlib
+    return hashlib.sha256(sql.encode()).hexdigest()[:16]
+
+
 def _is_destructive_migration(sql: str) -> bool:
     """Return True if the SQL contains a destructive op without the
     AIHUB-DESTRUCTIVE-OK marker."""
@@ -124,12 +129,34 @@ def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
     )
 
 
-def apply_migrations(app_id: str, migrations: list[tuple[int, str, str]]) -> dict[str, Any]:
-    """Apply pending migrations in order.
+def _applied_key(version: int, name: str) -> str:
+    return f"applied_migration.{version}:{name}"
 
-    `migrations` is a list of (version, name, sql) tuples; only those with
-    version > current schema_version are applied. The whole batch is one
-    transaction — partial migrations don't leave a broken state.
+
+def _applied_migration_keys(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT key FROM _aihub_meta WHERE key LIKE 'applied_migration.%'"
+    ).fetchall()
+    return {r["key"] for r in rows}
+
+
+def apply_migrations(app_id: str, migrations: list[tuple[int, str, str]]) -> dict[str, Any]:
+    """Apply pending migrations in version order.
+
+    `migrations` is a list of (version, name, sql) tuples. A migration is
+    pending until a migration with the SAME (version, name) has been applied —
+    tracked per-migration in _aihub_meta, NOT by a single high-water version.
+    A single version number can carry several independent migrations as long
+    as their names differ. This matters because the SDK's useAppSchema sends
+    every declaration as version 1 (with a content-derived name): an app that
+    declares its tables from several components/hooks used to have only the
+    FIRST declaration applied and the rest silently skipped ("no such table"
+    at runtime for every other table). Re-sending an already-applied
+    (version, name) — even with drifted SQL — still skips, so re-mounts and
+    legacy numbered migrations keep their idempotent behavior.
+
+    The whole batch is one transaction — partial migrations don't leave a
+    broken state.
 
     Refuses to run if any pending migration is destructive and lacks the
     AIHUB-DESTRUCTIVE-OK marker.
@@ -139,7 +166,11 @@ def apply_migrations(app_id: str, migrations: list[tuple[int, str, str]]) -> dic
     conn = _open(app_id)
     try:
         current = _current_schema_version(conn)
-        pending = [(v, n, s) for (v, n, s) in migrations if v > current]
+        applied_keys = _applied_migration_keys(conn)
+        pending = [
+            (v, n, s) for (v, n, s) in migrations
+            if _applied_key(v, n) not in applied_keys
+        ]
         pending.sort(key=lambda x: x[0])
 
         refused: list[dict] = []
@@ -165,7 +196,16 @@ def apply_migrations(app_id: str, migrations: list[tuple[int, str, str]]) -> dic
             with conn:  # BEGIN/COMMIT on success, ROLLBACK on exception
                 for v, n, s in pending:
                     conn.executescript(s)
-                    _set_schema_version(conn, v)
+                    conn.execute(
+                        "INSERT INTO _aihub_meta (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (_applied_key(v, n), _hash_sql(s)),
+                    )
+                    # Keep schema_version as a monotonic high-water mark for
+                    # anything that still reads it (never lowered by a
+                    # late-arriving independent declaration at an old version).
+                    current = max(current, v)
+                    _set_schema_version(conn, current)
                     applied.append(v)
         except Exception as e:
             return {
@@ -187,7 +227,14 @@ def apply_migrations(app_id: str, migrations: list[tuple[int, str, str]]) -> dic
 # ---------------------------------------------------------------------------
 # Query / exec — what the deployed app and the admin UI call
 # ---------------------------------------------------------------------------
-DEFAULT_ROW_CAP = 1000
+# Row caps for an app querying its OWN local SQLite store. The default was 1000,
+# which silently truncated any app whose data grew past it (a records/inventory
+# app showed only the first 1000 rows with no signal). It's the app's own data,
+# so the default is now generous; a caller can pass a smaller/larger `row_cap`
+# (clamped to HARD_ROW_CAP, which only exists to protect the JSON response and
+# the browser from an accidental multi-million-row fetch).
+DEFAULT_ROW_CAP = 50_000
+HARD_ROW_CAP = 500_000
 
 
 def execute_query(
@@ -204,6 +251,7 @@ def execute_query(
         'all'  – return rows from anyone (default)
         'user' – only rows where created_by = :current_user
     """
+    row_cap = max(1, min(int(row_cap), HARD_ROW_CAP))
     # The 'user' scope is implemented at the prompt level — the AI is expected
     # to write `WHERE created_by = :current_user` itself when it picks scope=user.
     # We still inject the param so the SQL can reference it.

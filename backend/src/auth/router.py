@@ -117,7 +117,10 @@ async def put_dev_standards(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    text = str(body.get("dev_standards", ""))[:8000]
+    # Generous cap — this feeds every generation prompt, but 8000 chars (~2k
+    # tokens) was far too small for a growing set of house rules. The UI shows a
+    # counter against the same limit so the truncation is never invisible.
+    text = str(body.get("dev_standards", ""))[:40000]
     user.dev_standards = text
     db.add(user)
     await db.commit()

@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,12 +16,42 @@ from ..ai_prompts import registry as prompt_registry
 logger = logging.getLogger(__name__)
 
 
+# Files the PLATFORM owns inside every generated app. The vendored SDK under
+# src/sdk/ is re-vendored from the template on every preview start (an edit
+# there silently evaporates), and the scaffold files are pinned by the
+# generation contract. A bug whose fix lives here is a PLATFORM bug — the
+# analyzer prompt says so, this module strips such proposals at parse time,
+# and the apply step refuses to write them (three layers, because the middle
+# one is an LLM following instructions).
+_PLATFORM_OWNED_PREFIXES = ("src/sdk/",)
+_PLATFORM_OWNED_FILES = {
+    "package.json", "package-lock.json", "vite.config.ts", "tsconfig.json",
+    "index.html", "src/main.tsx",
+}
+
+
+def is_platform_owned_path(path: str) -> bool:
+    """True for files the app must never change (vendored SDK + scaffold).
+
+    Canonicalizes before comparing: the same on-disk file can be spelled many
+    ways — `src//sdk/x.ts`, `src/./sdk/x.ts`, `SRC/SDK/x.ts` (NTFS and APFS
+    are case-insensitive), `package.json.` (Windows strips trailing dots and
+    spaces). pathlib's resolve() at apply time collapses all of those onto the
+    real file, so this guard must collapse them the same way or it can be
+    bypassed by a non-canonical spelling.
+    """
+    parts = PurePosixPath(path.replace("\\", "/")).parts
+    norm = [seg.rstrip(". ").lower() for seg in parts if seg not in (".", "/")]
+    canon = "/".join(norm)
+    return canon in _PLATFORM_OWNED_FILES or canon.startswith(_PLATFORM_OWNED_PREFIXES)
+
+
 # Files in the app source tree we send to the LLM. Keep the prompt budget sane.
 _INCLUDE_GLOBS = ("*.ts", "*.tsx", "*.js", "*.jsx", "*.css", "*.html", "*.json")
 _EXCLUDE_DIR_NAMES = {"node_modules", "dist", ".git", "build"}
 _EXCLUDE_FILE_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
-_MAX_FILE_BYTES = 60 * 1024  # skip enormous files
-_MAX_TOTAL_BYTES = 350 * 1024  # ~85k tokens worth of source — generous but not unbounded
+_MAX_FILE_BYTES = 256 * 1024   # per-file cap; oversize files are HEAD-truncated, not skipped
+_MAX_TOTAL_BYTES = 768 * 1024  # ~190k chars of source — generous for a 200k-context model
 
 
 @dataclass
@@ -48,37 +78,48 @@ def _resolve_source_dir(app_id: str, version: int | None) -> Path | None:
 
 
 def _collect_files(source_dir: Path) -> list[dict]:
-    """Walk the source dir and return [{path, content}] for files we can send to the LLM."""
-    out: list[dict] = []
-    total = 0
+    """Walk the source dir and return [{path, content}] for files we send to the LLM.
+
+    Files are ordered src/ first (the most likely culprits) BEFORE the byte budget
+    is applied, so when a large app would blow the budget we keep the most-relevant
+    files rather than whatever filesystem-walk order happened to reach first (the
+    old code sorted AFTER truncating, so it dropped the wrong files). A single
+    oversized file is HEAD-truncated with a marker rather than skipped outright —
+    the big component is often exactly where the bug lives, so it must not be
+    invisible to the analyzer.
+    """
+    def _rel(p: Path) -> str:
+        return str(p.relative_to(source_dir)).replace("\\", "/")
+
+    candidates: list[Path] = []
     for root in source_dir.rglob("*"):
         if not root.is_file():
             continue
-        # exclude any path component in the blacklist
         if any(part in _EXCLUDE_DIR_NAMES for part in root.parts):
             continue
         if root.name in _EXCLUDE_FILE_NAMES:
             continue
         if not any(root.match(g) for g in _INCLUDE_GLOBS):
             continue
-        try:
-            size = root.stat().st_size
-        except OSError:
-            continue
-        if size > _MAX_FILE_BYTES:
-            continue
-        if total + size > _MAX_TOTAL_BYTES:
-            # Stop once we'd blow the budget. We've already captured the most-prefixed files first.
+        candidates.append(root)
+
+    # Relevance order first — src/ before everything, then by path.
+    candidates.sort(key=lambda p: (0 if _rel(p).startswith("src/") else 1, _rel(p)))
+
+    out: list[dict] = []
+    total = 0
+    for root in candidates:
+        if total >= _MAX_TOTAL_BYTES:
             break
         try:
             content = root.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = str(root.relative_to(source_dir)).replace("\\", "/")
-        out.append({"path": rel, "content": content})
-        total += size
-    # Prefer src/ files first (most likely culprits) when budget is tight.
-    out.sort(key=lambda f: (0 if f["path"].startswith("src/") else 1, f["path"]))
+        cap = min(_MAX_FILE_BYTES, _MAX_TOTAL_BYTES - total)
+        if len(content) > cap:
+            content = content[:cap] + "\n… (file truncated for length)"
+        out.append({"path": _rel(root), "content": content})
+        total += len(content)
     return out
 
 
@@ -113,6 +154,7 @@ def parse_analyzer_response(raw: str) -> AnalysisResult:
     files = data.get("proposed_files", [])
     if isinstance(files, list):
         cleaned = []
+        dropped_platform: list[str] = []
         for f in files:
             if not isinstance(f, dict):
                 continue
@@ -126,8 +168,24 @@ def parse_analyzer_response(raw: str) -> AnalysisResult:
             # Defensive: reject any path that tries to escape the app sandbox.
             if path.startswith("/") or ".." in path.split("/"):
                 continue
+            # Platform-owned files can't be fixed at the app level — an edit to
+            # the vendored SDK would be overwritten at the next preview start.
+            if is_platform_owned_path(path):
+                dropped_platform.append(path)
+                continue
             cleaned.append({"path": path, "action": action, "content": content})
         result.proposed_files = cleaned
+        if dropped_platform:
+            note = (
+                "Discarded proposed change(s) to platform-owned file(s) the app "
+                f"cannot fix: {', '.join(dropped_platform)} — the vendored SDK/"
+                "scaffold is overwritten by the platform; this needs a "
+                "platform-level fix, not an app fix."
+            )
+            result.risk_rationale = (
+                f"{result.risk_rationale} {note}".strip() if result.risk_rationale else note
+            )
+            result.risk_level = "high"  # what's left is at best a partial fix
 
     return result
 
@@ -207,6 +265,7 @@ async def run_analysis(
         model = provider_config["model"]
         llm_model = model if provider_type == "openai" else f"{provider_type}/{model}"
 
+        from ..platform_settings.service import get_output_cap
         response = await acompletion(
             model=llm_model,
             messages=[
@@ -215,7 +274,7 @@ async def run_analysis(
             ],
             api_key=provider_config["api_key"],
             base_url=provider_config.get("base_url"),
-            max_tokens=8192,
+            max_tokens=await get_output_cap(db, "bug_analysis_max_output_tokens"),
             temperature=0.2,  # deterministic; we want surgical fixes
             stream=False,
             aihub_span={"app_id": app_id, "user_id": usage_user,

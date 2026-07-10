@@ -111,8 +111,14 @@ export function AdminDatasetsPage() {
     refresh()
   }, [])
 
+  // AI-provider connections can't back datasets — keep them out of this page's picker.
+  const datasetConnections = useMemo(
+    () => connections.filter((c) => c.kind !== 'ai'),
+    [connections],
+  )
+
   const openCreate = () => {
-    setEditor(EMPTY_EDITOR(connections[0]?.id || ''))
+    setEditor(EMPTY_EDITOR(datasetConnections[0]?.id || ''))
   }
 
   const openEdit = (d: Dataset) => {
@@ -160,9 +166,9 @@ export function AdminDatasetsPage() {
         actions={
           <button
             onClick={openCreate}
-            disabled={connections.length === 0}
+            disabled={datasetConnections.length === 0}
             className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            title={connections.length === 0 ? 'Create a Connection first' : 'Create a new dataset'}
+            title={datasetConnections.length === 0 ? 'Create a SQL or REST Connection first' : 'Create a new dataset'}
           >
             <Plus size={16} /> New Dataset
           </button>
@@ -209,7 +215,7 @@ export function AdminDatasetsPage() {
         <DatasetEditor
           state={editor}
           setState={setEditor}
-          connections={connections}
+          connections={datasetConnections}
           onClose={() => setEditor(null)}
           onSaved={() => {
             setEditor(null)

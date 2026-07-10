@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from ..secrets.encryption import encryption_service
 from ..secrets.models import AuditLog, Secret
+from . import providers
 from .drivers import rest as rest_driver
 from .drivers import sql as sql_driver
 from .drivers.sql import DriverNotInstalledError
@@ -43,6 +44,8 @@ class ConnectionsService:
     async def create_connection(
         self, db: AsyncSession, data: ConnectionCreate, user_id: str
     ) -> ConnectionResponse:
+        if data.kind == "ai":
+            providers.validate_ai_config(data.config)
         conn = Connection(
             name=data.name,
             description=data.description,
@@ -52,6 +55,7 @@ class ConnectionsService:
             default_row_limit=data.default_row_limit,
             default_timeout_seconds=data.default_timeout_seconds,
             read_only=data.read_only,
+            app_callable=data.app_callable,
             created_by=user_id,
         )
         db.add(conn)
@@ -79,11 +83,18 @@ class ConnectionsService:
         if not conn:
             return None
 
+        if data.kind is not None and data.kind != conn.kind:
+            raise ValueError(
+                f"A connection's kind cannot be changed after creation "
+                f"(this one is '{conn.kind}') — create a new connection instead"
+            )
         if data.name is not None:
             conn.name = data.name
         if data.description is not None:
             conn.description = data.description
         if data.config is not None:
+            if conn.kind == "ai":
+                providers.validate_ai_config(data.config)
             conn.config = data.config
         if data.credential_secret_ref is not None:
             conn.credential_secret_ref = data.credential_secret_ref or None
@@ -93,6 +104,8 @@ class ConnectionsService:
             conn.default_timeout_seconds = data.default_timeout_seconds
         if data.read_only is not None:
             conn.read_only = data.read_only
+        if data.app_callable is not None:
+            conn.app_callable = data.app_callable
         conn.updated_at = datetime.now(timezone.utc)
 
         db.add(AuditLog(
@@ -128,6 +141,14 @@ class ConnectionsService:
                 "Delete the datasets first."
             )
 
+        # Clear app→connection bindings first (their FK to connections has no
+        # cascade, so with foreign_keys=ON the DELETE would otherwise fail for
+        # any connection an app is bound to). Revoking access on delete is fine.
+        from sqlalchemy import delete as _delete
+        from .models import AppConnectionBinding
+        await db.execute(_delete(AppConnectionBinding).where(
+            AppConnectionBinding.connection_id == connection_id))
+
         db.add(AuditLog(
             user_id=user_id,
             action="connection.delete",
@@ -154,6 +175,8 @@ class ConnectionsService:
                 await self._test_sql(conn, credential)
             elif conn.kind == "rest":
                 await self._test_rest(conn, credential)
+            elif conn.kind == "ai":
+                await self._test_ai(conn, credential)
             else:
                 return ConnectionTestResult(success=False, message=f"Unknown kind '{conn.kind}'")
         except DriverNotInstalledError as e:
@@ -208,6 +231,72 @@ class ConnectionsService:
         finally:
             await client.aclose()
 
+    async def _test_ai(self, conn: Connection, secret: str | None) -> None:
+        """Unlike _test_rest, actually validate the API key: hit the provider's
+        list-models endpoint and require a 2xx. A 401 that _test_rest would
+        report as 'Connection successful' is exactly the failure an admin
+        setting up an AI provider needs to see. An EMPTY model list is still a
+        pass — auth worked (e.g. a fresh Azure resource with no deployments)."""
+        if not secret and (conn.config or {}).get("auth_type", "none") != "none":
+            raise ValueError(
+                "No API key found — check that the credential secret exists in "
+                "Admin → Secrets and its name matches this connection's credential reference"
+            )
+        await self._fetch_ai_models(
+            conn.config or {}, secret, conn.default_timeout_seconds, require_models=False)
+
+    async def fetch_provider_models(
+        self, db: AsyncSession, *, config: dict, credential_secret_ref: str | None,
+        timeout_seconds: int = 30,
+    ) -> list[str]:
+        """Live model list from a provider, using form-state config (the row
+        need not exist yet). Raises ValueError with an admin-readable message."""
+        secret = await self.resolve_credential(db, credential_secret_ref)
+        if credential_secret_ref and secret is None:
+            raise ValueError(
+                f"Secret '{credential_secret_ref}' was not found in Admin → Secrets "
+                "(or has no value)"
+            )
+        return await self._fetch_ai_models(config or {}, secret, timeout_seconds)
+
+    async def _fetch_ai_models(
+        self, config: dict, secret: str | None, timeout_seconds: int,
+        require_models: bool = True,
+    ) -> list[str]:
+        import httpx
+
+        client = rest_driver.build_client(config, secret=secret, timeout_seconds=timeout_seconds)
+        try:
+            # Per-preset pagination params (Anthropic defaults to 20/page).
+            resp = await client.get(
+                providers.ai_models_path(config),
+                params=providers.ai_models_query(config) or None,
+            )
+        except httpx.HTTPError as e:
+            raise ValueError(f"Could not reach the provider: {type(e).__name__}: {e}")
+        finally:
+            await client.aclose()
+        if resp.status_code in (401, 403):
+            raise ValueError(
+                f"The provider rejected the API key (HTTP {resp.status_code}) — "
+                "check the credential secret's value"
+            )
+        if resp.status_code >= 400:
+            raise ValueError(
+                f"The provider's models endpoint answered HTTP {resp.status_code} — "
+                "check the base URL (and models path) for this provider"
+            )
+        try:
+            body = resp.json()
+        except Exception:
+            raise ValueError("The provider's models endpoint did not return JSON")
+        models = providers.parse_models_response(body)
+        if not models and require_models:
+            raise ValueError(
+                "The provider answered but no model ids were found in the response"
+            )
+        return models
+
     def _to_response(self, conn: Connection) -> ConnectionResponse:
         return ConnectionResponse(
             id=conn.id,
@@ -219,6 +308,7 @@ class ConnectionsService:
             default_row_limit=conn.default_row_limit,
             default_timeout_seconds=conn.default_timeout_seconds,
             read_only=conn.read_only,
+            app_callable=conn.app_callable,
             created_by=conn.created_by,
             created_at=conn.created_at.isoformat(),
             updated_at=conn.updated_at.isoformat(),

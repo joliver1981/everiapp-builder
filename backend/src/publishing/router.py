@@ -8,6 +8,7 @@ from ..auth.dependencies import require_role
 from ..auth.models import User
 from ..database import get_db
 from ..notifications import service as notify
+from ..platform_settings.service import get_setting
 from . import service
 from .schemas import ApprovalResponse, ReviewRequest, SubmitPublishRequest
 
@@ -15,6 +16,22 @@ from .schemas import ApprovalResponse, ReviewRequest, SubmitPublishRequest
 router = APIRouter()
 # Mounted at /api/admin
 admin_router = APIRouter()
+
+
+@router.get("/{app_id}/publish-policy")
+async def get_publish_policy(
+    app_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("admin", "developer")),
+):
+    """Whether the caller must submit for admin approval to publish this app.
+
+    Lets the builder render the right control up front (Publish vs. Submit for
+    approval) instead of only discovering the gate from a 403. Admins are the
+    reviewers, so they always keep the direct-publish path.
+    """
+    require_approval = bool(await get_setting(db, "require_publish_approval"))
+    return {"require_approval": require_approval and user.role != "admin"}
 
 
 @router.post("/{app_id}/publish-requests", response_model=ApprovalResponse, status_code=201)

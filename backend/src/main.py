@@ -52,6 +52,10 @@ from .bug_reports.router import (
     public_router as bug_reports_public_router,
 )
 from .connections.router import router as connections_router
+from .connections.app_router import (
+    bindings_router as connections_bindings_router,
+    discoverable_router as connections_discoverable_router,
+)
 from .licensing.router import router as license_router
 from .app_db.router import router as app_db_router
 from .security_scan.router import router as security_scan_router
@@ -188,6 +192,8 @@ app.include_router(deployments_router, prefix="/api", tags=["deployments"])
 app.include_router(bug_reports_public_router, prefix="/api/bug-reports", tags=["bug-reports-public"])
 app.include_router(bug_reports_admin_router, prefix="/api/bug-reports", tags=["bug-reports-admin"])
 app.include_router(connections_router, prefix="/api/admin/connections", tags=["connections"])
+app.include_router(connections_bindings_router, prefix="/api/apps", tags=["connection-calls"])
+app.include_router(connections_discoverable_router, prefix="/api/connections", tags=["connections-discoverable"])
 app.include_router(license_router, prefix="/api/admin/license", tags=["license"])
 app.include_router(ai_prompts_admin_router, prefix="/api/admin/ai", tags=["ai-prompts"])
 app.include_router(generation_trace_router, prefix="/api/apps", tags=["generation-trace"])

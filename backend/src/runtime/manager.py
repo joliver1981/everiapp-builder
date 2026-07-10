@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 from ..config import settings
+from ..apps.provisioning import try_copy_template_node_modules
 from .. import node_env
 
 logger = logging.getLogger(__name__)
@@ -176,12 +177,18 @@ class RuntimeManager:
             return
 
         try:
-            # 1. npm install if missing — slow on first run (~30-60s)
+            # 1. Provision dependencies if missing. Scaffold no longer bundles
+            # node_modules (it cost ~40s on POST /api/apps), so the first start
+            # copies the template's node_modules offline when the app's declared
+            # deps still match; anything else falls back to a real npm install.
             node_modules = app_dir / "node_modules"
             if not node_modules.exists():
                 self._set_phase(app_proc, "installing",
-                                f"npm install in {source} (one-time, ~30-60s)")
-                await self._npm_install(app_dir)
+                                "preparing dependencies (one-time, ~30-60s)")
+                if not await try_copy_template_node_modules(app_dir):
+                    self._set_phase(app_proc, "installing",
+                                    f"npm install in {source} (one-time, ~30-60s)")
+                    await self._npm_install(app_dir)
 
             # 2. Spawn Vite — use absolute path to avoid cwd doubling
             self._set_phase(app_proc, "spawning", "starting vite dev server")

@@ -27,6 +27,10 @@ class _QueryIn(BaseModel):
     sql: str
     params: dict[str, Any] = Field(default_factory=dict)
     scope: str = "all"     # 'all' | 'user'
+    # Optional row cap for this query. Omitted → generous default; the service
+    # clamps to HARD_ROW_CAP. Lets an app that genuinely needs many rows ask for
+    # them instead of being silently truncated.
+    limit: int | None = Field(default=None, ge=1)
 
 
 class _ExecIn(BaseModel):
@@ -63,6 +67,7 @@ async def query(
             params=body.params,
             current_user=user.username,
             scope=body.scope,
+            row_cap=body.limit if body.limit is not None else appdb.DEFAULT_ROW_CAP,
         )
     except Exception as e:
         # Audit the failure too

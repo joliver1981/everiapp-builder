@@ -21,7 +21,12 @@ import {
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { DevSkillsModal } from '@/components/DevSkillsModal'
-import type { Role } from '@/types'
+import { apiClient } from '@/api/client'
+import type { PublishRequest, Role } from '@/types'
+
+// Fired by the Approvals tab after an approve/reject so the sidebar badge
+// updates immediately instead of waiting for the next poll.
+export const APPROVALS_CHANGED_EVENT = 'aihub:approvals-changed'
 
 interface NavItem {
   label: string
@@ -65,6 +70,27 @@ export function Sidebar() {
   }, [])
   const versionMismatch = apiVersion !== null && apiVersion !== __APP_VERSION__
 
+  // Pending publish-approval count → badge on the Platform entry, so admins see
+  // waiting requests from anywhere in the app (not just the Approvals tab).
+  const [pendingApprovals, setPendingApprovals] = useState(0)
+  useEffect(() => {
+    if (userRole !== 'admin') return
+    let cancelled = false
+    const refresh = () => {
+      apiClient.get<PublishRequest[]>('/admin/publish-requests')
+        .then((r) => { if (!cancelled) setPendingApprovals(r.length) })
+        .catch(() => { if (!cancelled) setPendingApprovals(0) })
+    }
+    refresh()
+    const interval = setInterval(refresh, 60_000)
+    window.addEventListener(APPROVALS_CHANGED_EVENT, refresh)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      window.removeEventListener(APPROVALS_CHANGED_EVENT, refresh)
+    }
+  }, [userRole])
+
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-border bg-card">
       <div className="flex items-center gap-3 px-6 py-5">
@@ -94,6 +120,14 @@ export function Sidebar() {
           >
             {item.icon}
             {item.label}
+            {item.to === '/admin/platform' && pendingApprovals > 0 && (
+              <span
+                title={`${pendingApprovals} publish request${pendingApprovals === 1 ? '' : 's'} awaiting review`}
+                className="ml-auto rounded-full bg-amber-400/90 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950"
+              >
+                {pendingApprovals}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>

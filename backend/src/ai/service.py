@@ -177,6 +177,44 @@ def _flush_stream_events(st: "_StreamState"):
     st.line_buffer = ""
 
 
+def _coalesce_text_events(events):
+    """Merge consecutive ('text', …) events into one.
+
+    The splitter's prose phase runs a per-character fence lookbehind, so it emits
+    prose one character per event. Forwarded as-is, that becomes one WebSocket
+    message per character — the browser re-renders the conversation per char and
+    streaming crawls. Merging here keeps the wire at one text event per LLM delta.
+    Ordering against code_stream events and the concatenated prose bytes are
+    unchanged; callers filter code_stream BEFORE coalescing so a suppressed block
+    doesn't split the surrounding prose into two events.
+    """
+    parts: list[str] = []
+    for kind, payload in events:
+        if kind == "text":
+            parts.append(payload)
+            continue
+        if parts:
+            yield ("text", "".join(parts))
+            parts.clear()
+        yield (kind, payload)
+    if parts:
+        yield ("text", "".join(parts))
+
+
+def _select_history_messages(history, window):
+    """Pick which prior conversation messages to replay to the model (pure).
+
+    Includes EVERY user message (they carry the instructions/design decisions we
+    must never forget, and they're small) plus the most-recent `window` messages
+    of full context (assistant turns store the whole code-carrying response, so
+    they're large and only the recent ones are worth resending — current files
+    are already supplied via the continuation block). Deduped, chronological.
+    """
+    window = max(1, int(window))
+    tail_ids = {id(m) for m in history[-window:]}
+    return [m for m in history if id(m) in tail_ids or m.role == "user"]
+
+
 # --- Editor-context formatter (pure; unit-tested in test_editor_context) ---
 def _format_editor_context(ctx: dict | None) -> str:
     """Render the in-code overlay's editor context as a focused system message.
@@ -203,8 +241,8 @@ def _format_editor_context(ctx: dict | None) -> str:
     sel = (ctx.get("selectionText") or "").strip()
     sstart, send = ctx.get("selStartLine"), ctx.get("selEndLine")
     if sel:
-        snippet = sel[:4000]
-        if len(sel) > 4000:
+        snippet = sel[:32000]
+        if len(sel) > 32000:
             snippet += "\n… (selection truncated)"
         where = ""
         if isinstance(sstart, int) and isinstance(send, int):
@@ -321,12 +359,13 @@ class AIService:
             _usage_in = 0
             _usage_out = 0
 
+            from ..platform_settings.service import get_output_cap
             response = await acompletion(
                 model=llm_model,
                 messages=messages,
                 api_key=provider_config["api_key"],
                 base_url=provider_config.get("base_url"),
-                max_tokens=16384,
+                max_tokens=await get_output_cap(db, "generation_max_output_tokens"),
                 temperature=0.7,
                 stream=True,
                 stream_options={"include_usage": True},
@@ -348,15 +387,17 @@ class AIService:
                 delta = chunk.choices[0].delta
                 if delta.content:
                     full_response += delta.content
-                    for kind, payload in _smart_stream_events(delta.content, st):
-                        if kind == "code_stream" and not live_code:
-                            continue
+                    events = _smart_stream_events(delta.content, st)
+                    if not live_code:
+                        events = (e for e in events if e[0] != "code_stream")
+                    for kind, payload in _coalesce_text_events(events):
                         yield {"type": kind, "data": payload}
 
             # Flush trailing prose / close an unterminated block.
-            for kind, payload in _flush_stream_events(st):
-                if kind == "code_stream" and not live_code:
-                    continue
+            events = _flush_stream_events(st)
+            if not live_code:
+                events = (e for e in events if e[0] != "code_stream")
+            for kind, payload in _coalesce_text_events(events):
                 yield {"type": kind, "data": payload}
 
             # Parse the complete response for files and wizard
@@ -558,7 +599,7 @@ class AIService:
                     messages.append({
                         "role": "system",
                         "content": "## This developer's standing preferences (apply "
-                                   "unless they conflict with platform rules)\n" + personal[:8000],
+                                   "unless they conflict with platform rules)\n" + personal,
                     })
             except Exception:
                 pass
@@ -587,6 +628,19 @@ class AIService:
             # Never let a dataset-prompt failure break code generation.
             logger.exception("Failed to load bound datasets for AI prompt; continuing without")
 
+        # Inject any app-callable Connections bound to this app so the model can
+        # make REAL external calls via callConnection() instead of faking them.
+        try:
+            from ..connections.app_calls import APP_CALLABLE_KINDS, list_bound_connections
+            from .prompts import available_connections_block
+            _conns = [c for c in await list_bound_connections(db, app_id)
+                      if c.kind in APP_CALLABLE_KINDS and c.app_callable]
+            _cblock = available_connections_block(_conns)
+            if _cblock:
+                messages.append({"role": "system", "content": _cblock})
+        except Exception:
+            logger.exception("Failed to load bound connections for AI prompt; continuing without")
+
         # Check if there are existing files (continuation)
         app_dir = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
         current_files = self._read_current_files(app_dir)
@@ -602,15 +656,27 @@ class AIService:
             )
             messages.append({"role": "system", "content": continuation_content})
 
-        # Add conversation history (last 20 messages to stay within context)
+        # Conversation history. Assistant turns store the FULL raw response (all
+        # generated code), so they're large — and the CURRENT files are already
+        # supplied via the continuation block above, which makes older assistant
+        # code redundant. USER turns carry the instructions and design decisions
+        # we must never forget, and they're small. So include EVERY earlier user
+        # message plus the most-recent `window` messages of full context: long
+        # builds stop silently forgetting early requirements, without a context
+        # blow-up. Window is admin-tunable (was a hardcoded 20).
         result = await db.execute(
             select(Message)
             .where(Message.conversation_id == conversation.id)
             .order_by(Message.created_at)
         )
-        history = result.scalars().all()
+        history = list(result.scalars().all())
 
-        for msg in history[-20:]:
+        from ..platform_settings.service import get_setting
+        try:
+            window = int(await get_setting(db, "generation_history_window"))
+        except (TypeError, ValueError):
+            window = 30
+        for msg in _select_history_messages(history, window):
             messages.append({"role": msg.role, "content": msg.content})
 
         # Check if the latest user message is a wizard request — augment prompt
@@ -696,12 +762,13 @@ class AIService:
             llm_model = model if provider_type == "openai" else f"{provider_type}/{model}"
 
             try:
+                from ..platform_settings.service import get_output_cap
                 fix_response = await acompletion(
                     model=llm_model,
                     messages=messages,
                     api_key=provider_config["api_key"],
                     base_url=provider_config.get("base_url"),
-                    max_tokens=8192,
+                    max_tokens=await get_output_cap(db, "self_heal_max_output_tokens"),
                     temperature=0.2,
                     stream=False,
                     aihub_span={"app_id": app_id, "user_id": user_id,

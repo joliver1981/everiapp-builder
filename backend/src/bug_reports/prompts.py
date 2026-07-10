@@ -17,6 +17,10 @@ Your job is to:
 3. Propose a minimal, surgical fix as a set of file changes
 4. Assess the risk of applying the fix automatically
 
+PLATFORM-OWNED FILES — the app cannot fix these:
+`src/sdk/**` (the vendored platform SDK — the platform re-vendors it into the app on every preview start, so any edit there is silently overwritten), `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, and `src/main.tsx` belong to the platform, not the app. NEVER propose a create/update/delete for them — such proposals are discarded by the platform before a fix is applied.
+If the root cause lives in one of these files, say so PLAINLY: state in `diagnosis` and `root_cause` that this is a PLATFORM bug that cannot be fixed from the app or the builder chat and needs a platform update (the user should report it to their platform admin). Then propose an app-level WORKAROUND only if a real one exists (e.g. a guard or retry in the app's own code); otherwise return an empty `proposed_files` array with risk_level "high". Never tell the user to edit `src/sdk/` or to ask the builder chat to edit it.
+
 RISK LEVELS — be honest, default to higher risk when unsure:
 - "low": copy/text/CSS-only edits, single-line changes, type annotation fixes, removing dead code, log/comment changes. Cannot break anything important.
 - "medium": logic changes confined to one component or function. Touches state but not data flow. New conditional. Reordered effects.
@@ -84,7 +88,7 @@ def build_analyzer_user_prompt(
         console_tail = captured_context.get("console_tail") or []
         if console_tail:
             parts.append("- Recent console output:")
-            for line in console_tail[-30:]:
+            for line in console_tail[-50:]:  # match the client's CONSOLE_TAIL_MAX
                 parts.append(f"    {line}")
         net_errors = captured_context.get("network_errors") or []
         if net_errors:
@@ -102,7 +106,7 @@ def build_analyzer_user_prompt(
             trace_id = captured_context.get("trace_id")
             parts.append(f"- Traced events leading up to the report"
                          f"{f' (trace {trace_id})' if trace_id else ''}, oldest first:")
-            for s in spans[-40:]:
+            for s in spans[-100:]:  # match the client's RING_MAX span buffer
                 if not isinstance(s, dict):
                     continue
                 line = (f"    [{s.get('kind', '?')}] {s.get('name', '')}"

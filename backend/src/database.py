@@ -75,6 +75,13 @@ _MISSING_COLUMN_MIGRATIONS = [
     ("app_decisions", "timeout_seconds",      "INTEGER DEFAULT 30"),
     # Personal developer "skills" injected into that user's generation turns
     ("users", "dev_standards",                "TEXT DEFAULT ''"),
+    # Per-decision LLM output ceiling. NULL = inherit the platform default
+    # (`decision_max_output_tokens` platform setting); a value overrides it.
+    # No column default: existing rows stay NULL so they inherit.
+    ("app_decisions", "max_output_tokens",    "INTEGER"),
+    # REST connections an admin has opened up for free-form app calls
+    # (callConnection); off by default.
+    ("connections", "app_callable",           "BOOLEAN DEFAULT 0"),
 ]
 
 
@@ -115,7 +122,7 @@ async def init_db():
     from .marketplace.models import MarketplaceListing  # noqa: F401
     from .deployments.models import Deployment, DeploymentTarget  # noqa: F401
     from .bug_reports.models import BugAnalysis, BugReport, FixAttempt  # noqa: F401
-    from .connections.models import Connection  # noqa: F401
+    from .connections.models import Connection, AppConnectionBinding  # noqa: F401
     from .datasets.models import Dataset, AppDatasetBinding  # noqa: F401
     from .llm_usage.models import LLMUsage  # noqa: F401
     from .platform_settings.models import PlatformSetting  # noqa: F401

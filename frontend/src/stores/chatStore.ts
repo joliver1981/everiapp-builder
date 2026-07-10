@@ -121,7 +121,7 @@ interface ChatState {
   // Jump-to-code + live code-streaming.
   codeNav: CodeNav | null      // pending "open this file + highlight" intent
   liveCode: LiveCode | null    // file the AI is currently writing (live view)
-  liveCodeEnabled: boolean     // watch the AI write code live (persisted pref)
+  liveCodeEnabled: boolean     // show the Live panel (persisted pref; code_stream events always flow)
   autoJumpEnabled: boolean     // auto-open+highlight code the AI references (persisted pref)
   lastSendWasNavRequest: boolean  // did the last sent message read as "take me to the code"?
 
@@ -502,9 +502,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         message,
         conversation_id: conversationId,
         provider_id: providerId || undefined,
-        // Ask the backend to stream code_stream events so the Live panel can show the
-        // AI writing each file. Off by default; harmless when the panel is closed.
-        live_code: get().liveCodeEnabled,
+        // Always ask the backend for code_stream events — the store accumulates them
+        // whether or not the Live panel is open, so opening the panel mid-generation
+        // shows the file in progress. The Live toggle only shows/hides the panel.
+        live_code: true,
         // What the user is looking at in the editor (sent from the in-code overlay) so the
         // AI focuses on the exact file/selection on screen. Omitted from the normal Chat tab.
         editor_context: editorContext || undefined,

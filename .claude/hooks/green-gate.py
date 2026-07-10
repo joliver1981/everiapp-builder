@@ -1,9 +1,9 @@
 """green-gate — Stop hook that blocks turn-end when tests or typecheck are red.
 
 Runs (in this order, stopping at the first failure):
-  1. backend pytest         (fast — ~2s)
-  2. aihub-agent pytest     (very fast — ~0.5s)
-  3. frontend tsc --noEmit  (slow — ~5-10s)
+  1. backend pytest         (~5 min — the integration-heavy part)
+  2. aihub-agent pytest     (~3s)
+  3. frontend tsc -b        (~15s)
 
 Exit codes:
   0  — all green, turn may end
@@ -68,12 +68,15 @@ class Check:
                 # had grown to 756 items (each new *_http.py module adds ~20-25s
                 # of TestClient-lifespan startup) and legitimately runs ~25min,
                 # tipping the old 1500s cap into TIMEOUT blocks that looked like
-                # failures on a loaded machine. Raised to 2400s. If this gets
-                # painful, mark the heaviest HTTP-lifecycle tests
-                # @pytest.mark.slow and add `-m "not slow"` here — simple
-                # 2-request tests are showing 20-25s apiece, so there's real
-                # optimization headroom too.
-                timeout=2400,
+                # failures on a loaded machine. 2026-07-07: root cause of the
+                # bloat found — POST /api/apps copied the template's ~140MB
+                # node_modules on every test app creation (~40s × dozens of
+                # apps). Scaffold no longer copies node_modules at all (deps
+                # are provisioned lazily at first preview/verify, see
+                # src/apps/provisioning.py) and the suite runs ~296s quiet
+                # (652 passed / 116 skipped). 1200s = 4x headroom for loaded
+                # machines while still catching real hangs.
+                timeout=1200,
             )
         except subprocess.TimeoutExpired as e:
             return False, f"TIMEOUT after {e.timeout}s", time.monotonic() - t0

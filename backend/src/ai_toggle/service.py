@@ -46,12 +46,16 @@ class AIToggleService:
                 {"role": "user", "content": request.message},
             ]
 
+            from ..platform_settings.service import get_output_cap
             response = await acompletion(
                 model=llm_model,
                 messages=messages,
                 api_key=provider_config["api_key"],
                 base_url=provider_config.get("base_url"),
-                max_tokens=2048,
+                # A cap, not a target — 2048 truncated longer assistant answers
+                # for end users. Generous by default (admin-tunable in Platform →
+                # Settings → AI output limits); small replies cost the same.
+                max_tokens=await get_output_cap(db, "assistant_max_output_tokens"),
                 temperature=0.5,
                 aihub_span={"app_id": app_id, "user_id": user_id,
                             "purpose": "ai_toggle",

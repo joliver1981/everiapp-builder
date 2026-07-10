@@ -40,8 +40,20 @@ export function ChatPanel({ appId }: ChatPanelProps) {
     verifyProgress, verifyResult, rollbackAvailable, rollbackDraft, dismissVerifyResult,
   } = useChatStore()
 
+  // Auto-scroll, at most once per frame. Streamed chunks arrive faster than the
+  // display refreshes; calling scrollIntoView({smooth}) per chunk restarts the
+  // scroll animation and forces layout each time. While streaming, jump ('auto')
+  // instead of gliding — a smooth scroll never finishes between chunks anyway.
+  const scrollPending = useRef(false)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (scrollPending.current) return
+    scrollPending.current = true
+    requestAnimationFrame(() => {
+      scrollPending.current = false
+      messagesEndRef.current?.scrollIntoView({
+        behavior: useChatStore.getState().isStreaming ? 'auto' : 'smooth',
+      })
+    })
   }, [messages])
 
   // Load the prompt library for the empty-state starters (best-effort).

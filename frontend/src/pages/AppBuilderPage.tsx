@@ -7,6 +7,7 @@ import {
   Plus,
   Save,
   Loader2,
+  CheckCircle2,
   PanelLeftClose,
   PanelLeftOpen,
   ToggleLeft,
@@ -56,8 +57,9 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useAppStore } from '@/stores/appStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useAuthStore } from '@/stores/authStore'
-import { apiClient } from '@/api/client'
+import { apiClient, ApiError } from '@/api/client'
 import { cn } from '@/lib/utils'
+import type { PublishRequest } from '@/types'
 
 type Panel = 'chat' | 'code' | 'preview'
 type RightPanel = 'none' | 'versions' | 'settings' | 'permissions' | 'wizard' | 'deployments' | 'data' | 'analytics' | 'live' | 'inspector'
@@ -236,6 +238,12 @@ export function AppBuilderPage() {
   const [showPublishDialog, setShowPublishDialog] = useState(false)
   const [publishResult, setPublishResult] = useState<{ version: number } | null>(null)
   const [publishError, setPublishError] = useState<string | null>(null)
+  // Publish-approval workflow: when the platform requires admin sign-off, the
+  // dialog turns into a "submit for approval" flow instead of a direct publish.
+  const [requireApproval, setRequireApproval] = useState(false)
+  const [publishRequests, setPublishRequests] = useState<PublishRequest[]>([])
+  const [isSubmittingRequest, setIsSubmittingRequest] = useState(false)
+  const [requestSubmitted, setRequestSubmitted] = useState(false)
   const [appName, setAppName] = useState('')
   const [isEditingName, setIsEditingName] = useState(false)
   const [showMarketplaceDialog, setShowMarketplaceDialog] = useState(false)
@@ -582,6 +590,34 @@ export function AppBuilderPage() {
     }
   }
 
+  // Was this an "approval required" 403 from the publish gate? If so the caller
+  // should flip the dialog into submit-for-approval mode rather than error out.
+  const isApprovalRequired = (err: unknown): boolean => {
+    if (!(err instanceof ApiError) || err.status !== 403) return false
+    try {
+      return JSON.parse(err.message)?.detail?.error === 'approval_required'
+    } catch {
+      return false
+    }
+  }
+
+  // Pull the platform's publish policy + this app's request history so the dialog
+  // can render the right control (Publish vs. Submit for approval) and status.
+  const loadPublishState = async () => {
+    if (!currentApp) return
+    try {
+      const [policy, reqs] = await Promise.all([
+        apiClient.get<{ require_approval: boolean }>(`/apps/${currentApp.id}/publish-policy`),
+        apiClient.get<PublishRequest[]>(`/apps/${currentApp.id}/publish-requests`),
+      ])
+      setRequireApproval(!!policy.require_approval)
+      setPublishRequests(reqs)
+    } catch {
+      // Non-fatal: fall back to direct-publish UI; the 403 handler still catches
+      // the gate if approval is actually required.
+    }
+  }
+
   const handlePublish = async () => {
     if (!currentApp) return
     setIsPublishing(true)
@@ -594,9 +630,32 @@ export function AppBuilderPage() {
       loadVersions()
       setPublishResult({ version: app.current_version })
     } catch (err: any) {
-      setPublishError(err?.message || 'Failed to create the version. Please try again.')
+      // The gate may have been switched on since the dialog opened — flip to the
+      // approval flow instead of showing a raw error the developer can't act on.
+      if (isApprovalRequired(err)) {
+        setRequireApproval(true)
+        setPublishError(null)
+        loadPublishState()
+      } else {
+        setPublishError(err?.message || 'Failed to create the version. Please try again.')
+      }
     } finally {
       setIsPublishing(false)
+    }
+  }
+
+  const handleSubmitForApproval = async () => {
+    if (!currentApp) return
+    setIsSubmittingRequest(true)
+    setPublishError(null)
+    try {
+      await apiClient.post(`/apps/${currentApp.id}/publish-requests`, { notes: publishNotes })
+      await loadPublishState()
+      setRequestSubmitted(true)
+    } catch (err: any) {
+      setPublishError(err?.message || 'Failed to submit the request. Please try again.')
+    } finally {
+      setIsSubmittingRequest(false)
     }
   }
 
@@ -605,7 +664,17 @@ export function AppBuilderPage() {
     setPublishNotes('')
     setPublishResult(null)
     setPublishError(null)
+    setRequestSubmitted(false)
   }
+
+  // Load policy + history when the app loads (powers the top-bar button label
+  // and pending indicator) and again whenever the publish dialog opens.
+  useEffect(() => {
+    if (currentApp?.id) loadPublishState()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentApp?.id, showPublishDialog])
+
+  const pendingRequest = publishRequests.find((r) => r.status === 'pending') || null
 
   const handlePublishToMarketplace = async () => {
     if (!currentApp) return
@@ -1184,14 +1253,25 @@ export function AppBuilderPage() {
             <Trash2 size={14} />
           </button>
 
-          {/* Save a new local version snapshot */}
+          {/* Save a new local version snapshot (or submit for approval when the
+              platform requires admin sign-off before publishing) */}
           <button
             onClick={() => setShowPublishDialog(true)}
-            title="Save a new immutable version snapshot (stored locally in the builder)"
-            className="ml-2 flex items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            title={requireApproval
+              ? 'Submit this app for admin approval to publish'
+              : 'Save a new immutable version snapshot (stored locally in the builder)'}
+            className="relative ml-2 flex items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
             <Save size={14} />
-            Save Version
+            {requireApproval ? 'Request Publish' : 'Save Version'}
+            {pendingRequest && (
+              <span
+                title="A publish request is awaiting admin review"
+                className="ml-1 rounded-full bg-amber-400/90 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950"
+              >
+                pending
+              </span>
+            )}
           </button>
 
           {/* Share publicly on the marketplace (needs a published version first) */}
@@ -1517,7 +1597,9 @@ export function AppBuilderPage() {
       {showPublishDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6">
-            <h2 className="text-lg font-semibold">Save Version</h2>
+            <h2 className="text-lg font-semibold">
+              {requireApproval ? 'Submit for Publish Approval' : 'Save Version'}
+            </h2>
 
             {publishResult ? (
               <div className="mt-4">
@@ -1544,6 +1626,99 @@ export function AppBuilderPage() {
                   </button>
                 </div>
               </div>
+            ) : requireApproval ? (
+              <>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  This platform requires an admin to approve publishes. Submitting sends a
+                  request to the review queue — an admin approves it (which performs the
+                  real publish, crediting you) or rejects it with a note.
+                </p>
+
+                {publishError && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
+                    <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                    <span>{publishError}</span>
+                  </div>
+                )}
+
+                {requestSubmitted && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg bg-green-500/10 p-3 text-sm text-green-700 dark:text-green-300">
+                    <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
+                    <span>Submitted for review. You&apos;ll be notified of the decision; the status shows below.</span>
+                  </div>
+                )}
+
+                {pendingRequest ? (
+                  <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+                    <p className="font-medium">Awaiting admin review</p>
+                    <p className="mt-1 text-xs">
+                      Submitted {new Date(pendingRequest.created_at).toLocaleString()}
+                      {pendingRequest.notes ? ` — "${pendingRequest.notes}"` : ''}
+                    </p>
+                    <p className="mt-1 text-xs opacity-80">
+                      You can&apos;t submit another request until this one is decided.
+                    </p>
+                  </div>
+                ) : !requestSubmitted && (
+                  <div className="mt-4">
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Release Notes</label>
+                    <textarea
+                      value={publishNotes}
+                      onChange={(e) => setPublishNotes(e.target.value)}
+                      className="w-full rounded-lg border border-input bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="What changed? The reviewer sees this."
+                      rows={3}
+                    />
+                  </div>
+                )}
+
+                {/* Recent request history so the developer can see approvals/rejections */}
+                {publishRequests.length > 0 && (
+                  <div className="mt-4 space-y-1.5">
+                    <p className="text-xs font-medium text-muted-foreground">Request history</p>
+                    {publishRequests.slice(0, 5).map((r) => (
+                      <div key={r.id} className="flex items-start justify-between gap-2 rounded-lg border border-border/60 bg-secondary/40 px-3 py-2 text-xs">
+                        <div className="min-w-0">
+                          <span className="text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</span>
+                          {r.status === 'approved' && r.resulting_version != null && (
+                            <span className="ml-2">→ v{r.resulting_version}</span>
+                          )}
+                          {r.status === 'rejected' && r.review_note && (
+                            <span className="ml-2 italic opacity-80">“{r.review_note}”</span>
+                          )}
+                        </div>
+                        <span className={cn(
+                          'shrink-0 rounded-full px-2 py-0.5 font-medium',
+                          r.status === 'pending' && 'bg-amber-400/20 text-amber-600 dark:text-amber-300',
+                          r.status === 'approved' && 'bg-green-500/20 text-green-700 dark:text-green-300',
+                          r.status === 'rejected' && 'bg-red-500/20 text-red-700 dark:text-red-300',
+                        )}>
+                          {r.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    onClick={closePublishDialog}
+                    className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+                  >
+                    {pendingRequest || requestSubmitted ? 'Close' : 'Cancel'}
+                  </button>
+                  {!pendingRequest && !requestSubmitted && (
+                    <button
+                      onClick={handleSubmitForApproval}
+                      disabled={isSubmittingRequest}
+                      className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {isSubmittingRequest && <Loader2 size={14} className="animate-spin" />}
+                      Submit for approval
+                    </button>
+                  )}
+                </div>
+              </>
             ) : (
               <>
                 <p className="mt-1 text-sm text-muted-foreground">

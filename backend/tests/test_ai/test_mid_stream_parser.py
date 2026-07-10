@@ -8,7 +8,12 @@ No DB/LLM.
 """
 import pytest
 
-from src.ai.service import _StreamState, _smart_stream_events, _flush_stream_events
+from src.ai.service import (
+    _StreamState,
+    _smart_stream_events,
+    _flush_stream_events,
+    _coalesce_text_events,
+)
 from src.ai.code_parser import parse_llm_response
 
 
@@ -162,3 +167,75 @@ def test_unterminated_block_closed_at_eof():
     assert any(e["event"] == "file_end" for e in code)
     body = "".join(e["text"] for e in code if e["event"] == "delta")
     assert "export const x = 1" in body
+
+
+# --- text-event coalescing (one WS message per LLM delta, not per character) ---
+
+def _run_coalesced(fragments, live_code=True):
+    """Feed fragments through the splitter + coalescer exactly as chat() does."""
+    st = _StreamState()
+    events = []
+    for frag in fragments:
+        evs = _smart_stream_events(frag, st)
+        if not live_code:
+            evs = (e for e in evs if e[0] != "code_stream")
+        events.extend(_coalesce_text_events(evs))
+    evs = _flush_stream_events(st)
+    if not live_code:
+        evs = (e for e in evs if e[0] != "code_stream")
+    events.extend(_coalesce_text_events(evs))
+    return events
+
+
+def test_coalesce_one_text_event_per_prose_delta():
+    """The splitter emits prose per-char; the wire must carry one event per delta."""
+    frags = ["Hello there, ", "let me build that dashboard ", "for you now."]
+    events = _run_coalesced(frags)
+    texts = [p for k, p in events if k == "text"]
+    # One event per fragment, +1 allowed for the flush of the 3-char lookbehind tail.
+    assert len(texts) <= len(frags) + 1
+    assert "".join(texts) == "Hello there, let me build that dashboard for you now."
+
+
+def test_coalesce_output_byte_identical_to_uncoalesced():
+    frags = [
+        "intro\n\n``",
+        "`tsx\n// FIL",
+        "E: src/App.tsx\nconst x =",
+        " 1\n``",
+        "`\noutro",
+    ]
+    assert _text(_run_coalesced(frags)) == _text(_run(frags))
+
+
+def test_coalesce_preserves_order_around_code_stream():
+    """Prose before a file block must still arrive before file_start, and prose after
+    the block after file_end — coalescing must not reorder across code_stream events."""
+    events = _run_coalesced([
+        "before\n\n```tsx\n// FILE: src/A.tsx\nconst a = 1\n```\nafter"
+    ])
+    kinds = []
+    for k, p in events:
+        if k == "text":
+            kinds.append(("text", p))
+        else:
+            kinds.append(("code_stream", p["event"]))
+    start = kinds.index(("code_stream", "file_start"))
+    end = kinds.index(("code_stream", "file_end"))
+    before = "".join(p for k, p in kinds[:start] if k == "text")
+    after = "".join(p for k, p in kinds[end + 1:] if k == "text")
+    assert "before" in before
+    assert "after" in after and "after" not in before
+
+
+def test_coalesce_with_live_off_merges_across_suppressed_block():
+    """When code_stream is filtered out (live_code=False), the prose around a file block
+    within one delta coalesces fully — the dropped events must not split it."""
+    events = _run_coalesced(
+        ["before\n\n```tsx\n// FILE: src/A.tsx\nconst a = 1\n```\nafter"],
+        live_code=False,
+    )
+    assert all(k == "text" for k, _ in events)
+    joined = "".join(p for _, p in events)
+    assert "before" in joined and "after" in joined
+    assert "const a = 1" not in joined            # code still suppressed from the bubble

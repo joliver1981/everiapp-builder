@@ -51,6 +51,23 @@ export interface AppVersion {
   created_at: string
 }
 
+// A developer's request to publish an app version, pending admin review.
+// Created when "Require admin approval before publish" is on.
+export interface PublishRequest {
+  id: string
+  app_id: string
+  requested_by: string
+  notes: string
+  status: 'pending' | 'approved' | 'rejected'
+  review_note: string
+  reviewed_by: string | null
+  resulting_version: number | null
+  security_max_severity: string | null
+  security_finding_count: number
+  created_at: string
+  reviewed_at: string | null
+}
+
 // Chat types
 export interface ChatMessage {
   id: string
@@ -269,7 +286,7 @@ export interface AIPurposeDefault {
 
 // --- Data platform: Connections + Datasets --------------------------------
 
-export type ConnectionKind = 'sql' | 'rest'
+export type ConnectionKind = 'sql' | 'rest' | 'ai'
 
 export interface Connection {
   id: string
@@ -281,6 +298,7 @@ export interface Connection {
   default_row_limit: number
   default_timeout_seconds: number
   read_only: boolean
+  app_callable: boolean
   created_by: string
   created_at: string
   updated_at: string

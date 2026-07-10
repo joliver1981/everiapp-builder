@@ -64,3 +64,7 @@ decision_limiter = RateLimiter(rate_per_sec=1.0, capacity=30)
 # Copilot diagnoses are heavyweight (source files + big model): a handful per
 # minute per user is plenty for interactive use.
 copilot_limiter = RateLimiter(rate_per_sec=0.1, capacity=5)
+# Free-form external calls an app makes through a Connection (callConnection).
+# Generous burst so a page that fans out to several models/endpoints at once
+# isn't throttled; keyed per app.
+external_call_limiter = RateLimiter(rate_per_sec=2.0, capacity=120)

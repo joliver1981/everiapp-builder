@@ -163,6 +163,25 @@ def test_admin_can_still_publish_directly_under_approval(client, admin_token, ap
     assert r.status_code == 201, r.text
 
 
+def test_publish_policy_off_by_default(client, dev_token):
+    """With the gate off, the builder is told it can publish directly."""
+    app_id = _new_clean_app()
+    r = client.get(f"/api/apps/{app_id}/publish-policy", headers=_auth(dev_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["require_approval"] is False
+
+
+def test_publish_policy_on_for_dev_bypassed_for_admin(client, admin_token, dev_token, approval_required):
+    """Gate on: developers must request approval; admins (reviewers) do not."""
+    app_id = _new_clean_app()
+    r = client.get(f"/api/apps/{app_id}/publish-policy", headers=_auth(dev_token))
+    assert r.status_code == 200, r.text
+    assert r.json()["require_approval"] is True
+
+    r = client.get(f"/api/apps/{app_id}/publish-policy", headers=_auth(admin_token))
+    assert r.json()["require_approval"] is False
+
+
 def test_developer_cannot_approve(client, dev_token, approval_required):
     app_id = _new_clean_app()
     r = client.post(f"/api/apps/{app_id}/publish-requests", json={"notes": "v"}, headers=_auth(dev_token))

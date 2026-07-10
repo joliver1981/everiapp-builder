@@ -15,7 +15,7 @@ from ..deployments.models import Deployment
 from ..deployments.service import deployments_service
 from ..secrets.models import AuditLog
 from ..versions.service import versions_service
-from .analyzer import AnalysisResult, run_analysis
+from .analyzer import AnalysisResult, is_platform_owned_path, run_analysis
 from .models import BugAnalysis, BugReport, FixAttempt
 
 logger = logging.getLogger(__name__)
@@ -371,7 +371,7 @@ class BugReportsService:
                 attempt_id = attempt.id
 
             # 1. Apply file changes to draft
-            await self._apply_file_changes(report_id, analysis.proposed_files)
+            skipped_platform = await self._apply_file_changes(report_id, analysis.proposed_files)
 
             # 2. Publish a new version (this also takes the snapshot the builder needs)
             async with async_session() as db:
@@ -445,6 +445,14 @@ class BugReportsService:
                     attempt.new_version = published.version
                     attempt.deployment_id = deployment.id
                     attempt.status = "succeeded"
+                    if skipped_platform:
+                        # The approver saw these files in the diff — never let a
+                        # partial apply wear an unqualified green checkmark.
+                        attempt.error = (
+                            f"Applied PARTIALLY: {len(skipped_platform)} platform-owned "
+                            f"file(s) refused: {', '.join(skipped_platform)} — those need "
+                            "a platform update, not an app fix."
+                        )
                 report = await self.get_report(db, report_id)
                 if report:
                     report.status = "resolved"
@@ -463,15 +471,25 @@ class BugReportsService:
                         report.error = str(e)[:1000]
                         await db.commit()
 
-    async def _apply_file_changes(self, report_id: str, files: list[dict]) -> None:
-        """Write proposed file changes to the app's draft directory."""
+    async def _apply_file_changes(self, report_id: str, files: list[dict]) -> list[str]:
+        """Write proposed file changes to the app's draft directory.
+
+        Returns the paths that were REFUSED because they are platform-owned —
+        the caller records them on the fix attempt, so a partially-applied fix
+        never masquerades as a complete one."""
         async with async_session() as db:
             report = await self.get_report(db, report_id)
             if not report:
-                return
+                return []
             app_id = report.app_id
 
         draft_dir = (Path(settings.app_data_dir) / app_id / "draft" / "frontend").resolve()
+        return self._write_fix_files(draft_dir, files)
+
+    @staticmethod
+    def _write_fix_files(draft_dir: Path, files: list[dict]) -> list[str]:
+        """Pure write step (unit-testable). Returns refused platform-owned paths."""
+        skipped: list[str] = []
         for f in files:
             rel = f.get("path", "")
             action = f.get("action", "update")
@@ -480,9 +498,18 @@ class BugReportsService:
                 continue
             target = (draft_dir / rel).resolve()
             try:
-                target.relative_to(draft_dir)
+                rel_resolved = target.relative_to(draft_dir)
             except ValueError:
                 logger.warning("Skipping file outside draft: %s", rel)
+                continue
+            # Check the RESOLVED relative path, not the raw string — resolve()
+            # collapses `//`, `./`, and Windows trailing-dot spellings onto the
+            # real file, so a raw-string check is bypassable by a non-canonical
+            # path. Parse-time already strips canonical spellings; this is the
+            # load-bearing guard (legacy stored analyses + evasive paths).
+            if is_platform_owned_path(str(rel_resolved)):
+                logger.warning("Refusing platform-owned file in bug-fix apply: %s", rel)
+                skipped.append(rel)
                 continue
             if action == "delete":
                 if target.exists():
@@ -490,6 +517,7 @@ class BugReportsService:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
+        return skipped
 
     async def _pick_redeploy_target(self, db: AsyncSession, report: BugReport) -> str | None:
         """Decision: fix lands on the SAME target the bug came from, when we know it."""

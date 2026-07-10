@@ -4,7 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.dependencies import require_role
 from ..auth.models import User
 from ..database import get_db
-from .schemas import ConnectionCreate, ConnectionResponse, ConnectionTestResult, ConnectionUpdate
+from .providers import AI_PROVIDERS
+from .schemas import (
+    ConnectionCreate,
+    ConnectionResponse,
+    ConnectionTestResult,
+    ConnectionUpdate,
+    FetchModelsRequest,
+    FetchModelsResult,
+)
 from .service import connections_service
 
 router = APIRouter()
@@ -55,6 +63,42 @@ async def list_pickable_connections(
     ]
 
 
+# NOTE: like /pickable, declared before GET /{connection_id} so the literal
+# path isn't captured as a connection id.
+@router.get("/ai-providers")
+async def list_ai_providers(
+    user: User = Depends(require_role("admin")),
+):
+    """The AI-provider preset registry: known base URLs, auth conventions,
+    models/chat endpoints, and suggested models. Drives the create form's
+    provider picker so an admin never has to look up a base URL."""
+    return {
+        "providers": [
+            {"provider": key, **preset} for key, preset in AI_PROVIDERS.items()
+        ]
+    }
+
+
+@router.post("/fetch-models", response_model=FetchModelsResult)
+async def fetch_models(
+    body: FetchModelsRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
+    """Pull the live model list from an AI provider using form-state config —
+    works before the connection is saved, so the create dialog can offer it."""
+    try:
+        models = await connections_service.fetch_provider_models(
+            db,
+            config=body.config,
+            credential_secret_ref=body.credential_secret_ref,
+            timeout_seconds=body.timeout_seconds,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return FetchModelsResult(models=models)
+
+
 @router.get("/{connection_id}", response_model=ConnectionResponse)
 async def get_connection(
     connection_id: str,
@@ -74,7 +118,11 @@ async def update_connection(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("admin")),
 ):
-    conn = await connections_service.update_connection(db, connection_id, body, user.id)
+    try:
+        conn = await connections_service.update_connection(db, connection_id, body, user.id)
+    except ValueError as e:
+        # AI-kind config replacements are validated eagerly.
+        raise HTTPException(status_code=400, detail=str(e))
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
     return conn

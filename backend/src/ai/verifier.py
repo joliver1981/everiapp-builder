@@ -31,6 +31,7 @@ from pathlib import Path
 import httpx
 
 from ..config import settings
+from ..apps.provisioning import try_copy_template_node_modules
 from .probe_shared import (
     A11Y_AUDIT_JS as _A11Y_AUDIT_JS,
     MOUNT_TIMEOUT_MS as _RUNTIME_MOUNT_TIMEOUT_MS,
@@ -131,8 +132,11 @@ def _free_port() -> int:
 
 
 async def ensure_node_modules(app_id: str) -> VerifyError | None:
-    """Run `npm install --no-audit --no-fund` if node_modules is missing.
+    """Provision node_modules if missing: template copy first, then npm install.
 
+    Scaffold no longer bundles node_modules (it cost ~40s on POST /api/apps), so
+    the first verify of a fresh app provisions it here — the offline template
+    copy when the app's declared deps still match, else a real npm install.
     Returns None on success, or a VerifyError describing what went wrong. We treat
     npm-install failures as build errors so the AI can attempt a fix (e.g. by
     correcting a malformed package.json it just wrote).
@@ -142,6 +146,9 @@ async def ensure_node_modules(app_id: str) -> VerifyError | None:
         return VerifyError(stage="build", file=None, line=None, column=None, code=None,
                            message=f"App draft directory missing: {app_dir}")
     if (app_dir / "node_modules").exists():
+        return None
+
+    if await try_copy_template_node_modules(app_dir):
         return None
 
     logger.info("verifier: npm install for %s", app_id)

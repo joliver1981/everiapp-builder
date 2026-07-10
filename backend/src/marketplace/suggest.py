@@ -166,6 +166,7 @@ async def suggest_metadata(
     model = provider_config["model"]
     llm_model = model if provider_type == "openai" else f"{provider_type}/{model}"
 
+    from ..platform_settings.service import get_output_cap
     response = await acompletion(
         model=llm_model,
         messages=[
@@ -174,7 +175,7 @@ async def suggest_metadata(
         ],
         api_key=provider_config["api_key"],
         base_url=provider_config.get("base_url"),
-        max_tokens=2_048,
+        max_tokens=await get_output_cap(db, "marketplace_suggest_max_output_tokens"),
         temperature=0.4,
         aihub_span={"app_id": app_id, "user_id": user.id,
                     "purpose": "marketplace_metadata",

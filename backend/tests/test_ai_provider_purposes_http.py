@@ -410,3 +410,59 @@ def test_self_heal_fix_call_records_usage(client, admin, providers, monkeypatch)
     assert rows[0]["user_id"] == "heal-tester"
     assert rows[0]["input_tokens"] == 111 and rows[0]["output_tokens"] == 22
     assert rows[0]["error"] is None
+
+
+# ------------------------------------------------- admin-tunable output caps
+
+_OUTPUT_CAP_KEYS = [
+    "generation_max_output_tokens", "self_heal_max_output_tokens",
+    "assistant_max_output_tokens", "bug_analysis_max_output_tokens",
+    "decision_max_output_tokens", "marketplace_suggest_max_output_tokens",
+]
+
+
+def test_output_caps_settings_roundtrip(client, admin):
+    """Every per-purpose LLM output cap is admin-editable via the settings API."""
+    r = client.get("/api/admin/settings", headers=admin)
+    assert r.status_code == 200, r.text
+    for k in _OUTPUT_CAP_KEYS:
+        assert k in r.json(), k
+
+    r = client.put("/api/admin/settings",
+                   json={k: 20000 + i for i, k in enumerate(_OUTPUT_CAP_KEYS)}, headers=admin)
+    assert r.status_code == 200, r.text
+    got = client.get("/api/admin/settings", headers=admin).json()
+    for i, k in enumerate(_OUTPUT_CAP_KEYS):
+        assert got[k] == 20000 + i, k
+    # restore defaults so other modules in a shared-process run see pristine caps
+    client.put("/api/admin/settings", json={
+        "generation_max_output_tokens": 16384, "self_heal_max_output_tokens": 8192,
+        "assistant_max_output_tokens": 8192, "bug_analysis_max_output_tokens": 8192,
+        "decision_max_output_tokens": 16384, "marketplace_suggest_max_output_tokens": 2048,
+    }, headers=admin)
+
+
+def test_assistant_output_cap_reaches_call_and_clamps(client, admin, providers, monkeypatch):
+    """The admin-set assistant cap is the max_tokens the AI Toggle call actually
+    uses — and an over-ceiling value is clamped, not passed through raw."""
+    import src.llm_compat as llm_compat
+    seen: list[dict] = []
+
+    async def capturing_acompletion(**kwargs):
+        seen.append(kwargs)
+        return _FakeResponse('{"response": "ok", "actions": []}')
+    monkeypatch.setattr(llm_compat, "acompletion", capturing_acompletion)
+
+    app_id = _make_app(client, admin, "Assistant Cap App")
+    client.put(f"/api/apps/{app_id}", json={"ai_toggle_enabled": True}, headers=admin)
+    try:
+        client.put("/api/admin/settings", json={"assistant_max_output_tokens": 12345}, headers=admin)
+        client.post(f"/api/ai-toggle/{app_id}/chat", json={"message": "hi"}, headers=admin)
+        assert seen[-1]["max_tokens"] == 12345
+
+        # Above the ceiling clamps to 64000 rather than reaching the provider raw.
+        client.put("/api/admin/settings", json={"assistant_max_output_tokens": 999999}, headers=admin)
+        client.post(f"/api/ai-toggle/{app_id}/chat", json={"message": "hi again"}, headers=admin)
+        assert seen[-1]["max_tokens"] == 64000
+    finally:
+        client.put("/api/admin/settings", json={"assistant_max_output_tokens": 8192}, headers=admin)

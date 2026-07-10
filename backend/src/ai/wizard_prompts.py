@@ -8,7 +8,7 @@ WIZARD_DETECTION_KEYWORDS = [
 ]
 
 
-WIZARD_GENERATION_PROMPT = """You are generating a setup wizard JSON schema for an AIHub app. A setup wizard allows users to configure the app when they install it from the marketplace.
+WIZARD_GENERATION_PROMPT = """You are generating a setup wizard JSON schema for an EveriApp app. A setup wizard allows users to configure the app when they install it from the marketplace.
 
 ## Wizard Schema Format
 The wizard is a JSON object with the following structure:

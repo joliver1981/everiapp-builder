@@ -42,10 +42,16 @@ def test_single_line_selection_says_line_not_lines():
 
 
 def test_selection_is_truncated():
-    big = "z" * 5000
+    big = "z" * 40000
     out = _format_editor_context({"path": "a.ts", "selectionText": big, "selStartLine": 1, "selEndLine": 200})
     assert "selection truncated" in out
-    assert out.count("z") == 4000          # capped at 4000 chars
+    assert out.count("z") == 32000         # capped at 32000 chars (raised from 4000)
+
+
+def test_selection_under_cap_is_not_truncated():
+    out = _format_editor_context({"path": "a.ts", "selectionText": "z" * 10000, "selStartLine": 1, "selEndLine": 9})
+    assert "selection truncated" not in out
+    assert out.count("z") == 10000         # a 10k-char selection now passes through whole
 
 
 def test_invalid_viewport_ignored():

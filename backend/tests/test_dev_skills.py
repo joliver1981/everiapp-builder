@@ -1,6 +1,6 @@
 """Developer skills: personal standing preferences injected into generation.
 
-- GET/PUT /api/auth/me/dev-standards round-trip (8k cap).
+- GET/PUT /api/auth/me/dev-standards round-trip (40k cap).
 - The REAL ai_service.chat() injects the developer's personal skills and the
   org-wide custom_system_prompt as system messages (fake streaming LLM
   captures what the model actually receives).
@@ -59,9 +59,13 @@ def test_dev_standards_roundtrip(client, admin):
     r = client.put("/api/auth/me/dev-standards", json={"dev_standards": SKILL}, headers=admin)
     assert r.status_code == 200 and r.json()["dev_standards"] == SKILL
     assert client.get("/api/auth/me/dev-standards", headers=admin).json()["dev_standards"] == SKILL
-    # Cap: oversized input is truncated, not rejected.
-    r = client.put("/api/auth/me/dev-standards", json={"dev_standards": "x" * 9000}, headers=admin)
-    assert len(r.json()["dev_standards"]) == 8000
+    # A rich standards doc that was silently cut at the old 8k now fits.
+    big = "x" * 30000
+    r = client.put("/api/auth/me/dev-standards", json={"dev_standards": big}, headers=admin)
+    assert r.json()["dev_standards"] == big and len(r.json()["dev_standards"]) == 30000
+    # Cap: still truncates (not rejects) beyond the generous 40k ceiling.
+    r = client.put("/api/auth/me/dev-standards", json={"dev_standards": "x" * 41000}, headers=admin)
+    assert len(r.json()["dev_standards"]) == 40000
     client.put("/api/auth/me/dev-standards", json={"dev_standards": SKILL}, headers=admin)
     # Anonymous: no.
     assert client.get("/api/auth/me/dev-standards").status_code in (401, 403)
@@ -110,3 +114,25 @@ def test_skills_injected_into_generation(client, admin, monkeypatch):
     assert SKILL in system_text                              # personal skill
     assert "corporate blue theme" in system_text             # org standard
     assert "developer's standing preferences" in system_text  # labeled block
+
+
+def test_history_keeps_all_user_messages_plus_recent_window():
+    """Long builds must not forget early instructions: EVERY user message is
+    replayed, plus the most-recent `window` messages of full context. Older
+    (large, code-carrying) assistant turns beyond the window are dropped."""
+    from types import SimpleNamespace
+    from src.ai.service import _select_history_messages
+
+    msgs = [
+        SimpleNamespace(role="user", content="u1"),
+        SimpleNamespace(role="assistant", content="a1"),
+        SimpleNamespace(role="user", content="u2"),
+        SimpleNamespace(role="assistant", content="a2"),
+        SimpleNamespace(role="user", content="u3"),
+        SimpleNamespace(role="assistant", content="a3"),
+    ]
+    contents = [m.content for m in _select_history_messages(msgs, window=2)]
+    # window=2 → tail {u3, a3}; plus all earlier user messages u1, u2.
+    assert contents == ["u1", "u2", "u3", "a3"]
+    assert "a1" not in contents and "a2" not in contents      # stale assistant code dropped
+    assert len(contents) == len(set(contents))                 # chronological, no dupes

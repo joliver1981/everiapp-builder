@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { User, Bot, AlertCircle, MapPin, ChevronRight, ChevronDown, Code2 } from 'lucide-react'
@@ -26,7 +26,10 @@ interface MessageBubbleProps {
   message: ChatMessage
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+// memo matters here: the store replaces only the streaming message's object on each
+// chunk, so every completed bubble keeps prop identity and skips its re-render —
+// otherwise the whole conversation re-parses markdown per streamed chunk.
+export const MessageBubble = memo(function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isError = message.role === 'system'
 
@@ -70,7 +73,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       </div>
     </div>
   )
-}
+})
 
 // "Jump to code" chips rendered under an assistant message that included [[jump:...]]
 // directives. Clicking one opens the Code panel and highlights the lines.

@@ -98,3 +98,4 @@ backend/tests/test_data/test_quality_errors_and_security.py
 backend/tests/test_data/test_quality_introspection.py
 backend/tests/test_data/test_quality_real_world_queries.py
 backend/tests/test_data/test_quality_runtime_concurrency.py
+*.tsbuildinfo

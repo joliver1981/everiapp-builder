@@ -56,6 +56,24 @@ def test_apply_migrations_runs_and_tracks_version(app_db_root):
     assert result2["applied_versions"] == []
 
 
+def test_same_version_different_names_both_apply(app_db_root):
+    """Independent schema declarations share version 1 (the SDK's useAppSchema
+    sends every declaration as version 1 with a content-derived name). Both
+    must apply; identity is (version, name), not a single high-water version."""
+    from src.app_db.service import apply_migrations, execute_query
+    app_id = str(uuid.uuid4())
+    r1 = apply_migrations(app_id, [(1, "app_schema_a", "CREATE TABLE IF NOT EXISTS a (id INTEGER)")])
+    r2 = apply_migrations(app_id, [(1, "app_schema_b", "CREATE TABLE IF NOT EXISTS b (id INTEGER)")])
+    assert r1["applied_versions"] == [1]
+    assert r2["applied_versions"] == [1]
+    # Both tables genuinely exist.
+    for t in ("a", "b"):
+        assert execute_query(app_id, f"SELECT * FROM {t}", {}, "admin").row_count == 0
+    # Same declaration re-sent → skipped.
+    r3 = apply_migrations(app_id, [(1, "app_schema_b", "CREATE TABLE IF NOT EXISTS b (id INTEGER)")])
+    assert r3["applied_versions"] == []
+
+
 def test_destructive_migration_refused_without_marker(app_db_root):
     from src.app_db.service import apply_migrations
     app_id = str(uuid.uuid4())
@@ -124,6 +142,36 @@ def test_row_cap_truncation(app_db_root):
     q = execute_query(app_id, "SELECT id FROM big ORDER BY id", {}, current_user="x", row_cap=20)
     assert q.row_count == 20
     assert q.truncated
+
+
+def test_default_row_cap_is_generous(app_db_root):
+    """The default cap must be far above the old 1000 so an app's own data store
+    isn't silently truncated. 1500 rows come back whole, not truncated."""
+    from src.app_db.service import apply_migrations, execute_exec, execute_query, DEFAULT_ROW_CAP
+    assert DEFAULT_ROW_CAP >= 50_000
+    app_id = str(uuid.uuid4())
+    apply_migrations(app_id, [(1, "init", "CREATE TABLE big (id INTEGER)")])
+    from src.app_db.service import _open
+    conn = _open(app_id)
+    try:
+        conn.executemany("INSERT INTO big VALUES (?)", [(i,) for i in range(1500)])
+        conn.commit()
+    finally:
+        conn.close()
+    q = execute_query(app_id, "SELECT id FROM big ORDER BY id", {}, current_user="x")
+    assert q.row_count == 1500
+    assert not q.truncated
+
+
+def test_row_cap_clamped_to_at_least_one(app_db_root):
+    """A bogus row_cap (0/negative) clamps to 1 rather than returning nothing."""
+    from src.app_db.service import apply_migrations, execute_exec, execute_query
+    app_id = str(uuid.uuid4())
+    apply_migrations(app_id, [(1, "init", "CREATE TABLE t (id INTEGER)")])
+    for i in range(5):
+        execute_exec(app_id, "INSERT INTO t VALUES (:i)", {"i": i}, current_user="x")
+    q = execute_query(app_id, "SELECT id FROM t ORDER BY id", {}, current_user="x", row_cap=0)
+    assert q.row_count == 1 and q.truncated
 
 
 def test_list_tables_and_row_counts(app_db_root):

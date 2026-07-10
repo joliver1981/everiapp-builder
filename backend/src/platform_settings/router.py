@@ -18,6 +18,14 @@ class SettingsIn(BaseModel):
     monthly_budget_usd: float | None = None
     per_user_budget_usd: float | None = None
     budget_alert_threshold: float | None = None
+    decision_max_output_tokens: int | None = None
+    generation_max_output_tokens: int | None = None
+    self_heal_max_output_tokens: int | None = None
+    assistant_max_output_tokens: int | None = None
+    bug_analysis_max_output_tokens: int | None = None
+    marketplace_suggest_max_output_tokens: int | None = None
+    decision_max_input_chars: int | None = None
+    generation_history_window: int | None = None
     security_scan_enabled: bool | None = None
     security_scan_block_publish: bool | None = None
     security_scan_block_severity: str | None = None

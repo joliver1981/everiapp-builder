@@ -17,6 +17,28 @@ DEFAULTS: dict[str, Any] = {
     "monthly_budget_usd": 0.0,        # 0 = unlimited
     "per_user_budget_usd": 0.0,       # 0 = unlimited
     "budget_alert_threshold": 0.8,    # warn at 80%
+    # Per-purpose LLM output caps (max_tokens), admin-tunable in Platform →
+    # Settings. A CAP is never a target — a short answer costs the same — so a
+    # generous default is free; only work that would overflow benefits from
+    # raising it. Read via get_output_cap() (coerces + clamps). The decision cap
+    # is special: it also has a per-decision override (NULL row = inherit this).
+    "decision_max_output_tokens": 16384,        # aiDecide decisions
+    "generation_max_output_tokens": 16384,      # app generation (code per turn)
+    "self_heal_max_output_tokens": 8192,        # verify → fix passes
+    "assistant_max_output_tokens": 8192,        # in-app AI assistant (AI Toggle)
+    "bug_analysis_max_output_tokens": 8192,     # bug analyzer / copilot diagnosis
+    "marketplace_suggest_max_output_tokens": 2048,  # listing-metadata drafts
+    # Optional cap on aiDecide INPUT size (chars of the canonical input JSON).
+    # 0 = unlimited (the default): the model's context window is the real limit,
+    # so there's no reason to cap by default. An operator can set a value purely
+    # for cost control.
+    "decision_max_input_chars": 0,
+    # Builder conversation-history window: how many recent messages of FULL
+    # context (large, code-carrying assistant turns included) to send per
+    # generation turn. ALL earlier user messages are always included on top of
+    # this, so raising it is rarely necessary — it exists so long builds keep
+    # more of the recent back-and-forth. Was a hardcoded 20.
+    "generation_history_window": 30,
     # Security scan of generated code (see security_scan module)
     "security_scan_enabled": True,
     "security_scan_block_publish": True,
@@ -111,6 +133,27 @@ async def get_all(db: AsyncSession) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
     return out
+
+
+# Bounds for the admin-tunable per-purpose LLM output caps. Generous ceiling
+# (a cap is never a target); the floor stops a fat-fingered 0 from silently
+# disabling output.
+OUTPUT_CAP_FLOOR = 256
+OUTPUT_CAP_CEIL = 64000
+
+
+async def get_output_cap(db: AsyncSession, key: str) -> int:
+    """Read a `*_max_output_tokens` setting as an int, clamped to a safe range.
+
+    Falls back to the coded default when unset/garbage, so a call site never has
+    to handle a missing or malformed value.
+    """
+    raw = await get_setting(db, key)
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        val = int(DEFAULTS.get(key) or OUTPUT_CAP_CEIL)
+    return min(max(OUTPUT_CAP_FLOOR, val), OUTPUT_CAP_CEIL)
 
 
 # ---------------------------------------------------------------------------

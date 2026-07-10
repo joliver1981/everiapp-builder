@@ -79,10 +79,31 @@ _UI_PAYLOAD = {
     "notify_on_budget": False,
     "notify_on_bug_report": True,
     "marketplace_url": "https://marketplace.example.com",
+    # Per-purpose LLM output caps + decision input cap + history window.
+    "decision_max_output_tokens": 16384,
+    "generation_max_output_tokens": 16384,
+    "self_heal_max_output_tokens": 8192,
+    "assistant_max_output_tokens": 8192,
+    "bug_analysis_max_output_tokens": 8192,
+    "marketplace_suggest_max_output_tokens": 2048,
+    "decision_max_input_chars": 0,
+    "generation_history_window": 25,
 }
 
 # smtp_password / marketplace_api_key are write-only: the UI sends them, GET scrubs.
 _SECRET_KEYS = {"smtp_password", "marketplace_api_key"}
+
+
+def test_ui_payload_keys_are_all_accepted_by_schema():
+    """Drift guard: every key the UI save() sends must be a real SettingsIn field.
+    A key present in the UI but missing from the schema would be silently dropped
+    on PUT — this fails loudly instead (and is cheaper to keep in sync than the
+    full round-trip list above)."""
+    from src.platform_settings.router import SettingsIn
+    ui_keys = set(_UI_PAYLOAD) | _SECRET_KEYS
+    schema_keys = set(SettingsIn.model_fields)
+    missing = ui_keys - schema_keys
+    assert not missing, f"UI sends keys SettingsIn does not accept: {sorted(missing)}"
 
 
 def test_all_ui_settings_round_trip(client, admin_token):

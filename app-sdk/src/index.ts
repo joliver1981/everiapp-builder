@@ -37,6 +37,23 @@ export {
   type AiDecideOptions,
   type UseDecisionState,
 } from './aiDecide'
+export {
+  callConnection,
+  useConnectionCall,
+  listConnections,
+  useConnections,
+  type ConnectionCallRequest,
+  type ConnectionCallResult,
+  type UseConnectionCallState,
+  type AppConnection,
+  type UseConnectionsState,
+} from './callConnection'
+export {
+  aiChat,
+  type ChatMessage,
+  type AiChatRequest,
+  type AiChatResult,
+} from './aiChat'
 export { reportBug, type ReportBugOptions, type ReportBugResult } from './reportBug'
 // Session-expiry contract: platform calls that hit 401 throw
 // SESSION_EXPIRED_MESSAGE and dispatch 'aihub:token-expired' on window —

@@ -18,25 +18,41 @@ import {
   ScrollText,
   Archive,
   Users,
+  ClipboardCheck,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { APPROVALS_CHANGED_EVENT } from '@/components/layout/Sidebar'
 import { apiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
+import type { PublishRequest } from '@/types'
 
-type Tab = 'health' | 'status' | 'cost' | 'license' | 'auth' | 'teams' | 'audit' | 'backups' | 'settings'
+type Tab = 'health' | 'status' | 'cost' | 'license' | 'auth' | 'teams' | 'approvals' | 'audit' | 'backups' | 'settings'
 
 const inputCls =
   'w-full rounded-lg border border-input bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring'
 
 export function AdminPlatformPage() {
   const [tab, setTab] = useState<Tab>('health')
-  const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
+  // Pending publish-request count drives the badge on the Approvals tab so an
+  // admin knows there's something waiting without opening it.
+  const [pendingApprovals, setPendingApprovals] = useState<number | null>(null)
+  const refreshPendingApprovals = () => {
+    apiClient.get<PublishRequest[]>('/admin/publish-requests')
+      .then((r) => setPendingApprovals(r.length))
+      .catch(() => setPendingApprovals(null))
+    // Nudge the sidebar's Platform badge too (it listens for this event).
+    window.dispatchEvent(new Event(APPROVALS_CHANGED_EVENT))
+  }
+  useEffect(() => { refreshPendingApprovals() }, [])
+
+  const tabs: { key: Tab; label: string; icon: React.ReactNode; badge?: number }[] = [
     { key: 'health', label: 'Health', icon: <Activity size={16} /> },
     { key: 'status', label: 'System', icon: <Server size={16} /> },
     { key: 'cost', label: 'LLM Cost', icon: <DollarSign size={16} /> },
     { key: 'license', label: 'License', icon: <KeyRound size={16} /> },
     { key: 'auth', label: 'Auth Providers', icon: <ShieldCheck size={16} /> },
     { key: 'teams', label: 'Teams', icon: <Users size={16} /> },
+    { key: 'approvals', label: 'Approvals', icon: <ClipboardCheck size={16} />, badge: pendingApprovals || undefined },
     { key: 'audit', label: 'Audit Log', icon: <ScrollText size={16} /> },
     { key: 'backups', label: 'Backups', icon: <Archive size={16} /> },
     { key: 'settings', label: 'Settings', icon: <SettingsIcon size={16} /> },
@@ -62,6 +78,11 @@ export function AdminPlatformPage() {
           >
             {t.icon}
             {t.label}
+            {t.badge ? (
+              <span className="rounded-full bg-amber-400/90 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950">
+                {t.badge}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>
@@ -72,6 +93,7 @@ export function AdminPlatformPage() {
         {tab === 'license' && <LicenseTab />}
         {tab === 'auth' && <AuthProvidersTab />}
         {tab === 'teams' && <TeamsTab />}
+        {tab === 'approvals' && <ApprovalsTab onChanged={refreshPendingApprovals} />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'backups' && <BackupsTab />}
         {tab === 'settings' && <SettingsTab />}
@@ -641,6 +663,14 @@ function SettingsTab() {
       monthly_budget_usd: Number(settings.monthly_budget_usd),
       per_user_budget_usd: Number(settings.per_user_budget_usd),
       budget_alert_threshold: Number(settings.budget_alert_threshold),
+      decision_max_output_tokens: Number(settings.decision_max_output_tokens),
+      generation_max_output_tokens: Number(settings.generation_max_output_tokens),
+      self_heal_max_output_tokens: Number(settings.self_heal_max_output_tokens),
+      assistant_max_output_tokens: Number(settings.assistant_max_output_tokens),
+      bug_analysis_max_output_tokens: Number(settings.bug_analysis_max_output_tokens),
+      marketplace_suggest_max_output_tokens: Number(settings.marketplace_suggest_max_output_tokens),
+      decision_max_input_chars: Number(settings.decision_max_input_chars),
+      generation_history_window: Number(settings.generation_history_window),
       security_scan_enabled: !!settings.security_scan_enabled,
       security_scan_block_publish: !!settings.security_scan_block_publish,
       security_scan_block_severity: settings.security_scan_block_severity,
@@ -690,6 +720,51 @@ function SettingsTab() {
             className={cn(inputCls, 'min-h-[100px]')}
             placeholder="Always use our teal palette and rounded-2xl cards…"
           />
+        </Labeled>
+        <Labeled label="Conversation history window (messages)"
+                 hint="How many recent builder messages of full context to send per turn. Every earlier user message (your instructions) is always included on top of this, so long builds don't forget requirements.">
+          <input type="number" min="1" value={settings.generation_history_window ?? 30}
+                 onChange={(e) => set({ generation_history_window: e.target.value })} className={cn(inputCls, 'w-40')} />
+        </Labeled>
+      </Section>
+
+      <Section title="AI output limits (max tokens)">
+        <p className="text-xs text-muted-foreground">
+          Per-purpose ceilings on how much the model may write in one call. Each is a cap,
+          not a target — raising one is free for short answers and only helps work that would
+          otherwise truncate mid-output. Range 256–64000.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="App generation" hint="code written per builder turn">
+            <input type="number" min="256" max="64000" value={settings.generation_max_output_tokens ?? 16384}
+                   onChange={(e) => set({ generation_max_output_tokens: e.target.value })} className={inputCls} />
+          </Labeled>
+          <Labeled label="Self-heal fixes" hint="each verify → fix pass">
+            <input type="number" min="256" max="64000" value={settings.self_heal_max_output_tokens ?? 8192}
+                   onChange={(e) => set({ self_heal_max_output_tokens: e.target.value })} className={inputCls} />
+          </Labeled>
+          <Labeled label="In-app AI assistant" hint="the AI Toggle assistant's replies to end users">
+            <input type="number" min="256" max="64000" value={settings.assistant_max_output_tokens ?? 8192}
+                   onChange={(e) => set({ assistant_max_output_tokens: e.target.value })} className={inputCls} />
+          </Labeled>
+          <Labeled label="Bug analysis" hint="bug-report diagnosis + copilot">
+            <input type="number" min="256" max="64000" value={settings.bug_analysis_max_output_tokens ?? 8192}
+                   onChange={(e) => set({ bug_analysis_max_output_tokens: e.target.value })} className={inputCls} />
+          </Labeled>
+          <Labeled label="AI decisions (aiDecide)"
+                   hint="default for decisions that don't set their own; a decision can override in decisions.json">
+            <input type="number" min="256" max="64000" value={settings.decision_max_output_tokens ?? 16384}
+                   onChange={(e) => set({ decision_max_output_tokens: e.target.value })} className={inputCls} />
+          </Labeled>
+          <Labeled label="Marketplace metadata" hint="drafting listing title/description">
+            <input type="number" min="256" max="64000" value={settings.marketplace_suggest_max_output_tokens ?? 2048}
+                   onChange={(e) => set({ marketplace_suggest_max_output_tokens: e.target.value })} className={inputCls} />
+          </Labeled>
+        </div>
+        <Labeled label="AI decision max input (chars)"
+                 hint="0 = unlimited (default). The model's context window is the real limit, so a cap isn't needed — set a value only to bound cost. When exceeded, the decision returns its fallback.">
+          <input type="number" min="0" value={settings.decision_max_input_chars ?? 0}
+                 onChange={(e) => set({ decision_max_input_chars: e.target.value })} className={cn(inputCls, 'w-40')} />
         </Labeled>
       </Section>
 
@@ -1162,6 +1237,184 @@ function TeamsTab() {
                     </div>
                   ))}
                   {members.length === 0 && <p className="text-xs text-muted-foreground">No members yet.</p>}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// FastAPI puts structured error bodies under `detail`; ApiError.message is the
+// raw response text. Pull the object back out so we can branch on error codes.
+function parseErrDetail(e: any): any {
+  try {
+    return JSON.parse(e?.message)?.detail
+  } catch {
+    return null
+  }
+}
+
+function SecurityPill({ severity, count }: { severity: string | null; count: number }) {
+  if (!count) {
+    return (
+      <span className="shrink-0 rounded-full bg-green-500/15 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-300">
+        scan clean
+      </span>
+    )
+  }
+  const sev = (severity || '').toLowerCase()
+  const high = sev === 'critical' || sev === 'high'
+  return (
+    <span
+      title="Security-scan posture snapshotted when the request was submitted"
+      className={cn(
+        'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium',
+        high ? 'bg-red-500/15 text-red-700 dark:text-red-300' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+      )}
+    >
+      {severity ? `${severity} · ` : ''}{count} finding{count === 1 ? '' : 's'}
+    </span>
+  )
+}
+
+// The publish-approval review queue. Admins land here to approve/reject the
+// requests developers submit when "Require admin approval before publish" is on.
+function ApprovalsTab({ onChanged }: { onChanged?: () => void }) {
+  const [reqs, setReqs] = useState<PublishRequest[] | null>(null)
+  const [appNames, setAppNames] = useState<Record<string, string>>({})
+  const [userNames, setUserNames] = useState<Record<string, string>>({})
+  const [error, setError] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [rejectNote, setRejectNote] = useState('')
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  const load = () => {
+    setError(null)
+    apiClient.get<PublishRequest[]>('/admin/publish-requests')
+      .then(setReqs)
+      .catch((e) => setError(e?.message || 'Request failed'))
+  }
+  useEffect(() => {
+    load()
+    // Resolve ids → human labels for the queue (best-effort; falls back to ids).
+    apiClient.get<any[]>('/apps').then((a) => {
+      const m: Record<string, string> = {}
+      a.forEach((x) => { m[x.id] = x.name })
+      setAppNames(m)
+    }).catch(() => {})
+    apiClient.get<any[]>('/admin/users').then((u) => {
+      const m: Record<string, string> = {}
+      u.forEach((x) => { m[x.id] = x.username })
+      setUserNames(m)
+    }).catch(() => {})
+  }, [])
+
+  const refresh = () => { load(); onChanged?.() }
+
+  const approve = async (r: PublishRequest, override = false) => {
+    setBusyId(r.id)
+    setActionError(null)
+    try {
+      await apiClient.post(`/apps/${r.app_id}/publish-requests/${r.id}/approve`, { override_security: override })
+      refresh()
+    } catch (e: any) {
+      const detail = parseErrDetail(e)
+      // The gate re-runs against CURRENT code on approve — it may block even if
+      // the snapshot was clean. Offer the admin an explicit override.
+      if (e?.status === 422 && detail?.error === 'security_scan_blocked') {
+        if (confirm('The current code trips the security scan. Approve anyway with a security override? This is recorded in the audit log.')) {
+          await approve(r, true)
+          return
+        }
+      } else {
+        setActionError(e?.message || 'Approve failed')
+      }
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const reject = async (r: PublishRequest) => {
+    setBusyId(r.id)
+    setActionError(null)
+    try {
+      await apiClient.post(`/apps/${r.app_id}/publish-requests/${r.id}/reject`, { review_note: rejectNote })
+      setRejectingId(null)
+      setRejectNote('')
+      refresh()
+    } catch (e: any) {
+      setActionError(e?.message || 'Reject failed')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  if (error) return <TabError error={error} onRetry={load} />
+  if (!reqs) return <p className="text-sm text-muted-foreground">Loading…</p>
+
+  return (
+    <div className="max-w-3xl">
+      <p className="mb-3 text-xs text-muted-foreground">
+        Developers land here when <span className="font-medium">Require admin approval before publish</span> is on
+        (Settings tab). Approving performs the real publish, crediting the original author; rejecting sends your note back to them.
+      </p>
+      {actionError && <div className="mb-3"><TabError error={actionError} /></div>}
+      {reqs.length === 0 ? (
+        <div className="rounded-lg border border-border bg-card p-6 text-center text-sm text-muted-foreground">
+          No pending publish requests. When a developer submits one, it appears here.
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {reqs.map((r) => (
+            <li key={r.id} className="rounded-lg border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{appNames[r.app_id] || r.app_id}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Requested by {userNames[r.requested_by] || r.requested_by} · {new Date(r.created_at).toLocaleString()}
+                  </p>
+                </div>
+                <SecurityPill severity={r.security_max_severity} count={r.security_finding_count} />
+              </div>
+              {r.notes && (
+                <p className="mt-2 rounded bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">“{r.notes}”</p>
+              )}
+              {rejectingId === r.id ? (
+                <div className="mt-3 space-y-2">
+                  <textarea
+                    value={rejectNote}
+                    onChange={(e) => setRejectNote(e.target.value)}
+                    placeholder="Why is this being rejected? (sent to the developer)"
+                    className={cn(inputCls, 'text-xs')}
+                    rows={2}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => { setRejectingId(null); setRejectNote('') }}
+                            className="rounded-lg px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
+                      Cancel
+                    </button>
+                    <button onClick={() => reject(r)} disabled={busyId === r.id}
+                            className="flex items-center gap-1.5 rounded-lg bg-red-500/90 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50">
+                      {busyId === r.id && <Loader2 size={12} className="animate-spin" />}
+                      Confirm reject
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 flex justify-end gap-2">
+                  <button onClick={() => setRejectingId(r.id)} disabled={busyId === r.id}
+                          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-secondary disabled:opacity-50">
+                    <XCircle size={13} /> Reject
+                  </button>
+                  <button onClick={() => approve(r)} disabled={busyId === r.id}
+                          className="flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600/90 disabled:opacity-50">
+                    {busyId === r.id ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={13} />}
+                    Approve &amp; publish
+                  </button>
                 </div>
               )}
             </li>

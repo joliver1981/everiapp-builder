@@ -29,6 +29,7 @@ def build_client(
       base_url:        required
       auth_type:       one of AUTH_TYPES (default "none")
       default_headers: dict of static headers
+      default_query:   dict of static query params (e.g. Azure OpenAI's api-version)
       auth_param:      header name (api_key_header) or query param name (api_key_query)
     """
     base_url = config.get("base_url")
@@ -40,7 +41,10 @@ def build_client(
         raise ValueError(f"Unknown auth_type '{auth_type}'. Known: {sorted(AUTH_TYPES)}")
 
     headers: dict[str, str] = dict(config.get("default_headers") or {})
-    params: dict[str, str] = {}
+    # Static params first, so an api_key_query credential overwrites a collision.
+    params: dict[str, str] = {
+        str(k): str(v) for k, v in (config.get("default_query") or {}).items()
+    }
 
     if secret:
         if auth_type == "bearer":

@@ -88,7 +88,7 @@ export function CodeEditor({
     let selEndLine: number | null = null
     if (sel && !sel.isEmpty()) {
       const text = model.getValueInRange(sel)
-      selectionText = text.length > 4000 ? text.slice(0, 4000) : text
+      selectionText = text.length > 32000 ? text.slice(0, 32000) : text
       selStartLine = sel.startLineNumber
       selEndLine = sel.endLineNumber
     }
