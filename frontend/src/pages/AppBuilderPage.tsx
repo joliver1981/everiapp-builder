@@ -30,7 +30,7 @@ import {
   Rocket,
   Bug,
   ShieldCheck,
-  Database,
+  Plug,
   FileDiff,
   BarChart3,
   Radio,
@@ -1225,9 +1225,9 @@ export function AppBuilderPage() {
                 ? 'bg-primary/10 text-primary'
                 : 'text-muted-foreground hover:text-foreground'
             )}
-            title="Data sources"
+            title="Data & APIs"
           >
-            <Database size={14} />
+            <Plug size={14} />
           </button>
 
           {/* Deployments panel toggle */}

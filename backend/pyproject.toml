@@ -82,6 +82,22 @@ all-dbs = [
     "oracledb>=2.0.0",
 ]
 
+# --- Server-function curated libraries --------------------------------------
+# What app server functions may import beyond the stdlib. This list is a
+# CONTRACT mirrored in ai/prompts.py (the AI is taught exactly these names) —
+# change both together. Dev checkouts install them into the platform venv
+# (server functions run under sys.executable there); packaged installs ship
+# them as <install>/python-libs for the vendored CPython instead (see
+# python_env.py and the installer build).
+server-fns = [
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "openpyxl>=3.1",
+    "reportlab>=4.2",
+    "pypdf>=5.1",
+    "python-dateutil>=2.9",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 

@@ -17,6 +17,7 @@ import {
   Table,
   Gauge,
   Workflow,
+  Package,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -45,6 +46,7 @@ const navItems: NavItem[] = [
   { label: 'AI Providers', to: '/admin/ai-providers', icon: <Bot size={20} />, roles: ['admin'] },
   { label: 'Connections', to: '/admin/connections', icon: <Database size={20} />, roles: ['admin'] },
   { label: 'Datasets', to: '/admin/datasets', icon: <Table size={20} />, roles: ['admin'] },
+  { label: 'Python Packages', to: '/admin/python-packages', icon: <Package size={20} />, roles: ['admin'] },
   { label: 'Deployment Targets', to: '/admin/deployment-targets', icon: <Server size={20} />, roles: ['admin'] },
   { label: 'Platform', to: '/admin/platform', icon: <Gauge size={20} />, roles: ['admin'] },
   { label: 'AI Flow', to: '/admin/ai-flow', icon: <Workflow size={20} />, roles: ['admin'] },

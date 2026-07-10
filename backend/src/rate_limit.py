@@ -68,3 +68,7 @@ copilot_limiter = RateLimiter(rate_per_sec=0.1, capacity=5)
 # Generous burst so a page that fans out to several models/endpoints at once
 # isn't throttled; keyed per app.
 external_call_limiter = RateLimiter(rate_per_sec=2.0, capacity=120)
+# App server functions (callFunction): each invoke spawns a child interpreter,
+# and whatever the function does through ctx hits the limiters above again.
+# Keyed per app.
+fn_limiter = RateLimiter(rate_per_sec=1.0, capacity=30)

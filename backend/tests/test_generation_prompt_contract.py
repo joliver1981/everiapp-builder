@@ -41,9 +41,12 @@ def test_prompt_names_the_only_server_side_paths():
 
 def test_prompt_states_hard_limits_and_forbids_faking():
     p = SYSTEM_PROMPT.lower()
-    # Hard limits present.
+    # Hard limits present. Since Phase 2 the server-side-code limit is
+    # narrower — server functions ARE custom server-side code — but the
+    # remaining limits (no background/scheduled work, no webhooks) must stay
+    # stated as hard.
     assert "cannot" in p and "api key" in p
-    assert "custom server-side code" in p
+    assert "background jobs" in p and "webhooks" in p and "scheduled" in p
     # The anti-faking rule + the concrete role-play example that burned a user.
     assert "never" in p and ("fake" in p or "simulate" in p)
     assert "role-play" in p
@@ -137,6 +140,57 @@ def test_connections_block_without_ai_kind_omits_aichat_section():
         {"id": "c1", "name": "rest-conn", "description": "", "base_url": "https://api.example.com"},
     ])
     assert "aiChat" not in block
+
+
+def test_prompt_teaches_server_functions():
+    """Phase 2: apps CAN run custom server-side code as Python server functions.
+    The prompt must teach the whole contract — file convention, handler
+    signature, the ctx API, the timeout, the exact curated library list — and
+    the when-NOT rule (a function wrapping a single SDK call is overhead), or
+    the builder will either keep refusing server-side asks or generate
+    functions that can't run."""
+    p = SYSTEM_PROMPT.lower()
+    assert "server functions" in p
+    assert "server/functions/" in p
+    assert "callfunction" in p
+    assert "def handler(args, ctx)" in p
+    assert "timeout" in p
+    # The curated libraries are a contract (pyproject [server-fns] extra +
+    # installer python-libs) — the AI must know exactly what it may import.
+    for lib in ("pandas", "numpy", "openpyxl", "reportlab", "pypdf"):
+        assert lib in p, f"prompt no longer names curated library {lib}"
+    # Function code can't self-install; admins add packages via the admin page.
+    assert "cannot pip install" in p
+    assert "admin" in p and "python packages" in p
+    # When NOT to use one.
+    assert "pure overhead" in p
+    # server/sdk.py is platform-owned.
+    assert "server/sdk.py" in p and ("never edit" in p or "never modify" in p)
+
+
+def test_python_packages_block_renders_names_and_pins():
+    """Admin-installed packages are per-instance state the model can learn
+    ONLY from this injected block — it must render name==version lines and the
+    server-functions-only rule (they don't exist in the browser bundle)."""
+    from src.ai.prompts import available_python_packages_block
+    block = available_python_packages_block([
+        {"name": "tabulate", "installed_version": "0.9.0"},
+        {"name": "scikit-learn", "installed_version": ""},
+    ])
+    b = block.lower()
+    assert "tabulate==0.9.0" in b
+    assert "scikit-learn" in b
+    assert "server functions" in b and "browser" in b
+    # Empty list → no block at all (never inject an empty heading).
+    assert available_python_packages_block([]) is None
+
+
+def test_prompt_points_admins_at_python_packages_page():
+    """Guide-don't-fake for missing libraries: when a needed package isn't
+    available, the builder must direct users to Admin → Python Packages, not
+    invent an import or vendor a copy."""
+    p = SYSTEM_PROMPT.lower()
+    assert "admin → python packages" in p or "admin -> python packages" in p
 
 
 def test_prompt_teaches_runtime_connection_discovery():

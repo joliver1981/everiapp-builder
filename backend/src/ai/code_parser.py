@@ -83,11 +83,13 @@ def parse_llm_response(content: str) -> tuple[list[GeneratedFile], str, dict | N
 
     # --- Format 1: Individual code blocks with FILE headers ---
     # Pattern: ```lang\n// FILE: path\ncontent\n```
+    # `# FILE:` is the same header in Python comment syntax — models writing
+    # server functions (server/functions/*.py) naturally use it.
     file_block_pattern = re.compile(
-        r'```(\w*)\s*\n'           # opening fence with optional language
-        r'//\s*FILE:\s*(\S+)\s*\n' # FILE header with path
-        r'(.*?)'                    # file content
-        r'\n```',                   # closing fence
+        r'```(\w*)\s*\n'                  # opening fence with optional language
+        r'(?://|#)\s*FILE:\s*(\S+)\s*\n'  # FILE header with path
+        r'(.*?)'                          # file content
+        r'\n```',                         # closing fence
         re.DOTALL,
     )
 

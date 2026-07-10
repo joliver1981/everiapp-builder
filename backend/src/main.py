@@ -58,6 +58,8 @@ from .connections.app_router import (
 )
 from .licensing.router import router as license_router
 from .app_db.router import router as app_db_router
+from .functions.router import router as functions_router
+from .python_packages.router import router as python_packages_router
 from .security_scan.router import router as security_scan_router
 from .dependency_scan.router import router as dependency_scan_router
 from .llm_usage.router import router as llm_usage_router
@@ -201,6 +203,8 @@ app.include_router(tracing_router, prefix="/api/apps", tags=["tracing"])
 app.include_router(decisions_router, prefix="/api/decisions", tags=["decisions"])
 app.include_router(copilot_router, prefix="/api/copilot", tags=["copilot"])
 app.include_router(app_db_router, prefix="/api/apps", tags=["app-db"])
+app.include_router(functions_router, prefix="/api/apps", tags=["app-functions"])
+app.include_router(python_packages_router, prefix="/api/admin/python-packages", tags=["python-packages"])
 app.include_router(security_scan_router, prefix="/api/apps", tags=["security-scan"])
 app.include_router(dependency_scan_router, prefix="/api/apps", tags=["dependency-scan"])
 app.include_router(llm_usage_router, prefix="/api/admin/llm-usage", tags=["llm-usage"])

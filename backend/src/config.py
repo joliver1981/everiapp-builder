@@ -129,6 +129,7 @@ class Settings(BaseSettings):
     agent_request_timeout: int = 30
     ssh_connect_timeout: int = 15
     deployer_command_timeout: int = 600  # npm install / build
+    pip_command_timeout: int = 600  # admin server-function package installs (pip)
     deployment_cors_allow_pattern: str = ""  # extra regex for CORS (e.g. "https?://192\\.168\\.\\d+\\.\\d+(:\\d+)?")
 
     # Audit log rotation

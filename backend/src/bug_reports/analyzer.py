@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _PLATFORM_OWNED_PREFIXES = ("src/sdk/",)
 _PLATFORM_OWNED_FILES = {
     "package.json", "package-lock.json", "vite.config.ts", "tsconfig.json",
-    "index.html", "src/main.tsx",
+    "index.html", "src/main.tsx", "server/sdk.py",
 }
 
 

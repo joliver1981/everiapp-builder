@@ -54,6 +54,15 @@ export {
   type AiChatRequest,
   type AiChatResult,
 } from './aiChat'
+export {
+  callFunction,
+  useFunction,
+  listFunctions,
+  useFunctions,
+  type AppFunction,
+  type UseFunctionState,
+  type UseFunctionsState,
+} from './callFunction'
 export { reportBug, type ReportBugOptions, type ReportBugResult } from './reportBug'
 // Session-expiry contract: platform calls that hit 401 throw
 // SESSION_EXPIRED_MESSAGE and dispatch 'aihub:token-expired' on window —

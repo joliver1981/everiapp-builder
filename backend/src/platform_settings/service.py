@@ -83,6 +83,10 @@ DEFAULTS: dict[str, Any] = {
     # marketplace's Developer page, and never shipped with the product.
     "marketplace_url": os.environ.get("AIHUB_MARKETPLACE_URL", "https://aihub-marketplace.vercel.app"),
     "marketplace_api_key": "",     # write-only secret, like smtp_password
+    # Package index for server-function installs (Admin → Python Packages).
+    # Empty = pypi.org. Air-gapped installs point this at an internal mirror
+    # (Artifactory/Nexus simple index URL); both version lookup and pip use it.
+    "pip_index_url": "",
     # App tracing (ai_spans). Capture level applies at span WRITE time:
     #   full          — metadata + Fernet-encrypted prompt/response payloads
     #   metadata_only — tokens/cost/latency/status, no payloads

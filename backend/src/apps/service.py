@@ -78,40 +78,34 @@ def sanitized_wizard(wizard) -> dict | None:
     return wizard
 
 
-def refresh_vendored_sdk(frontend_dir: Path) -> None:
-    """Overwrite an app tree's src/sdk with the current template's copy.
-
-    The vendored SDK is platform infrastructure snapshotted into every app at
-    scaffold time; trees arriving from packages or old version snapshots carry
-    whatever the SOURCE instance ran, silently reintroducing already-fixed SDK
-    bugs (e.g. the config-fetch auth header). Apps must not edit these files
-    (generation prompt rule), so a straight replace is safe. No-op when either
-    side is missing."""
-    template_sdk = Path(__file__).parent.parent.parent.parent / "app-template" / "src" / "sdk"
-    vendored = frontend_dir / "src" / "sdk"
-    if template_sdk.exists() and vendored.exists():
-        shutil.rmtree(vendored)
-        shutil.copytree(template_sdk, vendored)
+def _template_root() -> Path:
+    return Path(__file__).parent.parent.parent.parent / "app-template"
 
 
-def sync_vendored_sdk(frontend_dir: Path) -> list[str]:
-    """Converge an app tree's src/sdk to the current template copy, touching
-    ONLY files whose bytes differ. Returns the names it (re)wrote.
+def _sync_template_dir(template_dir: Path, vendored_dir: Path, *, create: bool = False) -> list[str]:
+    """Converge a platform-owned directory in an app tree to the template's
+    copy, touching ONLY files whose bytes differ. Returns the names it
+    (re)wrote. Top-level files only — subdirectories (e.g. server/functions/,
+    which is USER code) are never touched or deleted.
 
-    This is the preview-start variant of refresh_vendored_sdk: existing apps
-    keep whatever SDK was vendored at generation time, so SDK fixes never
-    reached them until now. Two constraints shape it:
+    Two constraints shape it:
       - a Vite dev server may already be watching these files, and rewriting
         an identical file still fires HMR → the running preview would reload
         on every Start click (the exact reset class fixed in v0.7.x) — hence
         the byte-compare before every write;
       - never DELETE extras: an older app may still import a module the
         template has since dropped, and breaking its build is worse than
-        letting a dead file lie."""
-    template_sdk = Path(__file__).parent.parent.parent.parent / "app-template" / "src" / "sdk"
-    vendored = frontend_dir / "src" / "sdk"
+        letting a dead file lie.
+
+    create=True mkdirs the target — apps scaffolded before the directory
+    existed in the template (e.g. pre-server-functions apps) gain it on their
+    next preview start."""
     updated: list[str] = []
-    if not (template_sdk.exists() and vendored.exists()):
+    if not template_dir.exists():
+        return updated
+    if create:
+        vendored_dir.mkdir(parents=True, exist_ok=True)
+    if not vendored_dir.exists():
         return updated
 
     def _write_atomic(dst: Path, data: bytes) -> None:
@@ -123,21 +117,59 @@ def sync_vendored_sdk(frontend_dir: Path) -> list[str]:
         tmp.write_bytes(data)
         os.replace(tmp, dst)
 
-    files = [p for p in sorted(template_sdk.iterdir()) if p.is_file()]
+    files = [p for p in sorted(template_dir.iterdir()) if p.is_file()]
     # Two passes — ADDS first: an updated importer must never be observable
     # before the new module it imports exists (e.g. './session'), or a live
     # Vite flashes an unresolved-import overlay for the gap.
     for src in files:
-        dst = vendored / src.name
+        dst = vendored_dir / src.name
         if not dst.exists():
             _write_atomic(dst, src.read_bytes())
             updated.append(src.name)
     for src in files:
-        dst = vendored / src.name
+        dst = vendored_dir / src.name
         data = src.read_bytes()
         if src.name not in updated and dst.read_bytes() != data:
             _write_atomic(dst, data)
             updated.append(src.name)
+    return updated
+
+
+def refresh_vendored_sdk(frontend_dir: Path) -> None:
+    """Overwrite an app tree's platform-owned SDK files with the current
+    template's copies.
+
+    The vendored SDK is platform infrastructure snapshotted into every app at
+    scaffold time; trees arriving from packages or old version snapshots carry
+    whatever the SOURCE instance ran, silently reintroducing already-fixed SDK
+    bugs (e.g. the config-fetch auth header). Apps must not edit these files
+    (generation prompt rule), so a straight replace is safe. No-op when either
+    side is missing. server/ is converged file-by-file (never rmtree'd) because
+    server/functions/ next to sdk.py is the app's own code."""
+    template_sdk = _template_root() / "src" / "sdk"
+    vendored = frontend_dir / "src" / "sdk"
+    if template_sdk.exists() and vendored.exists():
+        shutil.rmtree(vendored)
+        shutil.copytree(template_sdk, vendored)
+        _sync_template_dir(_template_root() / "server", frontend_dir / "server", create=True)
+
+
+def sync_vendored_sdk(frontend_dir: Path) -> list[str]:
+    """Preview-start variant of refresh_vendored_sdk: converge the browser SDK
+    (src/sdk) and the server-function types module (server/sdk.py) to the
+    current template, byte-compare gated so a watching Vite doesn't reload.
+    Existing apps keep whatever was vendored at generation time, so SDK fixes
+    never reached them until now. Returns the paths it (re)wrote."""
+    # Mid-scaffold trees (no src/sdk yet) must not explode or gain files —
+    # src/sdk's presence is the "this is a real scaffolded app" marker, and
+    # every app has one, so real apps still gain server/sdk.py.
+    if not (frontend_dir / "src" / "sdk").exists():
+        return []
+    updated = _sync_template_dir(_template_root() / "src" / "sdk", frontend_dir / "src" / "sdk")
+    updated += [
+        f"server/{name}"
+        for name in _sync_template_dir(_template_root() / "server", frontend_dir / "server", create=True)
+    ]
     return updated
 
 

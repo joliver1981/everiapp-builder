@@ -641,6 +641,21 @@ class AIService:
         except Exception:
             logger.exception("Failed to load bound connections for AI prompt; continuing without")
 
+        # Inject admin-installed Python packages so server functions the model
+        # writes import only what actually exists (the curated set is static
+        # prompt text; admin installs vary per instance).
+        try:
+            from ..python_packages.models import PythonPackage
+            from .prompts import available_python_packages_block
+            _pkgs = (await db.execute(
+                select(PythonPackage).where(PythonPackage.status == "installed")
+                .order_by(PythonPackage.name))).scalars().all()
+            _pblock = available_python_packages_block(_pkgs)
+            if _pblock:
+                messages.append({"role": "system", "content": _pblock})
+        except Exception:
+            logger.exception("Failed to load python packages for AI prompt; continuing without")
+
         # Check if there are existing files (continuation)
         app_dir = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
         current_files = self._read_current_files(app_dir)
@@ -686,25 +701,30 @@ class AIService:
         return messages
 
     def _read_current_files(self, app_dir: Path) -> str:
-        """Read current app files for context."""
+        """Read current app files for context. Walks src/ (the UI) and server/
+        (server functions — .py) so continuation turns see both halves of the
+        app; without the latter the model would re-invent functions it already
+        wrote."""
         if not app_dir.exists():
             return ""
 
-        src_dir = app_dir / "src"
-        if not src_dir.exists():
-            return ""
-
         files_content = []
-        for root, _dirs, files in os.walk(src_dir):
-            for file in files:
-                if file.endswith(('.tsx', '.ts', '.css')) and 'node_modules' not in root:
-                    filepath = Path(root) / file
-                    rel_path = filepath.relative_to(app_dir)
-                    try:
-                        content = filepath.read_text(encoding='utf-8')
-                        files_content.append(f"### {rel_path}\n```\n{content}\n```")
-                    except Exception:
-                        continue
+        for sub_dir, extensions in (
+            (app_dir / "src", ('.tsx', '.ts', '.css')),
+            (app_dir / "server", ('.py',)),
+        ):
+            if not sub_dir.exists():
+                continue
+            for root, _dirs, files in os.walk(sub_dir):
+                for file in files:
+                    if file.endswith(extensions) and 'node_modules' not in root and '__pycache__' not in root:
+                        filepath = Path(root) / file
+                        rel_path = filepath.relative_to(app_dir)
+                        try:
+                            content = filepath.read_text(encoding='utf-8')
+                            files_content.append(f"### {rel_path}\n```\n{content}\n```")
+                        except Exception:
+                            continue
 
         return "\n\n".join(files_content)
 
@@ -920,6 +940,11 @@ class AIService:
             rel = file_path.relative_to(resolved_app_dir).as_posix()
             if rel == "src/sdk" or rel.startswith("src/sdk/"):
                 logger.warning("Blocked model write to vendored SDK: %s (app %s)", f.path, app_id)
+                continue
+            # server/sdk.py is the same class of file for server functions —
+            # platform-owned, re-vendored on preview start.
+            if rel == "server/sdk.py":
+                logger.warning("Blocked model write to server SDK types: %s (app %s)", f.path, app_id)
                 continue
 
             if f.action == "delete":

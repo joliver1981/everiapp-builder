@@ -12,6 +12,7 @@ import { AdminSecretsPage } from '@/pages/AdminSecretsPage'
 import { AdminAIProvidersPage } from '@/pages/AdminAIProvidersPage'
 import { AdminConnectionsPage } from '@/pages/AdminConnectionsPage'
 import { AdminDatasetsPage } from '@/pages/AdminDatasetsPage'
+import { AdminPythonPackagesPage } from '@/pages/AdminPythonPackagesPage'
 import { AdminPlatformPage } from '@/pages/AdminPlatformPage'
 import { AdminAIFlowPage } from '@/pages/AdminAIFlowPage'
 import { AdminDeploymentTargetsPage } from '@/pages/AdminDeploymentTargetsPage'
@@ -129,6 +130,10 @@ function AppRoutes() {
         <Route
           path="admin/datasets"
           element={<AdminRoute><AdminDatasetsPage /></AdminRoute>}
+        />
+        <Route
+          path="admin/python-packages"
+          element={<AdminRoute><AdminPythonPackagesPage /></AdminRoute>}
         />
         <Route
           path="admin/deployment-targets"

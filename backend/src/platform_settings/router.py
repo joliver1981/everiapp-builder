@@ -54,6 +54,7 @@ class SettingsIn(BaseModel):
     backup_retention: int | None = None
     marketplace_url: str | None = None
     marketplace_api_key: str | None = None
+    pip_index_url: str | None = None
 
 
 _REDACTED = "***REDACTED***"

@@ -82,6 +82,20 @@ async def system_status(db: AsyncSession = Depends(get_db),
         "scheduled_backups": bool(cfg.get("backup_enabled")),
     }
 
+    # Server-function Python environment — the "why won't this import" screenshot.
+    from .. import python_env
+    from ..python_packages.models import PythonPackage
+    from ..python_packages.service import BUNDLED_PACKAGES
+    admin_count = (await db.execute(
+        select(func.count()).select_from(PythonPackage))).scalar() or 0
+    python_env_info = {
+        "python_version": python_env.child_python_version(),
+        "pip_available": python_env.pip_cmd() is not None,
+        "managed_dir": str(python_env.managed_packages_dir()),
+        "bundled_count": len(BUNDLED_PACKAGES),
+        "admin_count": admin_count,
+    }
+
     from ..version import PLATFORM_VERSION
     return {
         "version": PLATFORM_VERSION,
@@ -92,4 +106,5 @@ async def system_status(db: AsyncSession = Depends(get_db),
         "disk": disk,
         "counts": counts,
         "background_loops": loops,
+        "python_env": python_env_info,
     }

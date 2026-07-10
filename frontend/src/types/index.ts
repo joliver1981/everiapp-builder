@@ -359,3 +359,45 @@ export interface DatasetRecentCall {
 export interface DatasetRecentCallsResult {
   calls: DatasetRecentCall[]
 }
+
+// --- Python packages (server-function environment) -------------------------
+
+export type PythonPackageSource = 'bundled' | 'admin'
+export type PythonPackageStatus = 'pending' | 'installing' | 'installed' | 'uninstalling' | 'failed'
+
+export interface PythonPackage {
+  name: string
+  version: string
+  source: PythonPackageSource
+  status: PythonPackageStatus
+  error: string
+  requested_spec: string | null
+  pinned_version: string | null
+  requested_by: string | null
+  updated_at: string | null
+}
+
+export interface PythonPackagesEnvironment {
+  python_version: string
+  python_path: string
+  pip_available: boolean
+  managed_dir: string
+  index_url: string
+  dependency_count: number
+  busy: boolean
+}
+
+export interface PythonPackagesInventory {
+  packages: PythonPackage[]
+  environment: PythonPackagesEnvironment
+}
+
+export interface PythonPackageLookup {
+  available: boolean
+  error?: string
+  name?: string
+  normalized_name?: string
+  summary?: string
+  latest?: string
+  versions?: string[]
+}
