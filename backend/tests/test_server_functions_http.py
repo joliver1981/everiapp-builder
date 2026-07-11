@@ -366,6 +366,52 @@ def test_ctx_call_connection_through_the_real_route(client, admin, live_server, 
     assert captured["path"] == "/v1/data"
 
 
+def test_ctx_list_connections_discovers_attached(client, admin, live_server):
+    """A server function can enumerate its app's attached connections — same
+    non-secret shape and app_callable filter as the browser SDK — so generated
+    server code never hardcodes connection ids or needs the client to pass
+    them down."""
+    import httpx
+
+    app_id = _make_app(client, admin)
+    name = f"disco-{uuid.uuid4().hex[:6]}"
+    cr = client.post("/api/admin/connections", json={
+        "name": name, "kind": "rest",
+        "config": {"base_url": "https://api.example.com", "auth_type": "bearer"},
+        "credential_secret_ref": None,
+        "app_callable": True,
+    }, headers=admin)
+    conn_id = cr.json()["id"]
+    assert client.post(f"/api/apps/{app_id}/connections/{conn_id}",
+                       headers=admin).status_code in (200, 201)
+
+    _write_fn(app_id, "disco", """
+        def handler(args, ctx):
+            conns = ctx.list_connections()
+            return {"names": [c["name"] for c in conns], "raw": conns}
+    """)
+    r = httpx.post(f"http://127.0.0.1:{live_server}/api/apps/{app_id}/fn/disco",
+                   json={"args": {}}, headers=admin, timeout=60)
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert name in result["names"]
+    row = next(c for c in result["raw"] if c["name"] == name)
+    assert row["kind"] == "rest" and row["base_url"] == "https://api.example.com"
+    # Non-secret shape: no config blob, no credential material.
+    flat = str(result["raw"]).lower()
+    assert "credential_secret_ref" not in flat and "auth_type" not in flat
+
+    # A never-attached app sees an empty list, not an error.
+    lonely = _make_app(client, admin)
+    _write_fn(lonely, "disco", """
+        def handler(args, ctx):
+            return {"n": len(ctx.list_connections())}
+    """)
+    r = httpx.post(f"http://127.0.0.1:{live_server}/api/apps/{lonely}/fn/disco",
+                   json={"args": {}}, headers=admin, timeout=60)
+    assert r.status_code == 200 and r.json()["result"]["n"] == 0
+
+
 def test_ctx_errors_carry_the_platform_detail(client, admin, live_server):
     """An unbound connection's fixable 403 message must surface verbatim in the
     function's error — that's what lets the AI/user fix it without guessing."""

@@ -162,6 +162,10 @@ def test_prompt_teaches_server_functions():
     # Function code can't self-install; admins add packages via the admin page.
     assert "cannot pip install" in p
     assert "admin" in p and "python packages" in p
+    # Runtime connection discovery exists server-side too — the model must
+    # enumerate, never hardcode connection ids or route them via the client.
+    assert "ctx.list_connections" in p
+    assert "never hardcode connection ids" in p
     # When NOT to use one.
     assert "pure overhead" in p
     # server/sdk.py is platform-owned.

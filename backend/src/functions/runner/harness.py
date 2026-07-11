@@ -136,11 +136,23 @@ class Ctx:
     # KEEP IN SYNC with app-sdk/src/aiChat.ts — same provider-format mapping,
     # same resolve-don't-throw contract for upstream/gateway failures.
 
-    def _connections(self) -> list[dict]:
+    def _connections(self, label: str = "ctx.list_connections") -> list[dict]:
         if self._conn_cache is None:
             self._conn_cache = self._bridge.request(
-                "ctx.ai_chat", "GET", f"/api/apps/{self.app_id}/connections")
+                label, "GET", f"/api/apps/{self.app_id}/connections")
         return self._conn_cache
+
+    def list_connections(self) -> list[dict]:
+        """The Connections attached to this app, non-secret fields only —
+        same shape and filter as the browser SDK's listConnections(): each is
+        {id, name, description, kind, base_url, ...} plus provider/models/
+        default_model for kind == "ai". Use it to discover what
+        ctx.call_connection / ctx.ai_chat can reach instead of hardcoding ids
+        or requiring the client to pass them down."""
+        # A binding can outlive the admin's app-callable flag — mirror the
+        # browser SDK and hide those rather than offering a dead connection.
+        return [c for c in self._connections()
+                if c.get("app_callable") is not False]
 
     def ai_chat(self, id_or_name: str, messages, model: str | None = None,
                 system: str | None = None, max_tokens: int | None = None,

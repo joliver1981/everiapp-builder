@@ -110,6 +110,15 @@ class Ctx(Protocol):
         """Log a line — returned to the app in the invoke response's logs[]."""
         ...
 
+    def list_connections(self) -> list[dict[str, Any]]:
+        """The Connections attached to this app (non-secret fields only):
+        each is {id, name, description, kind, base_url, app_callable} plus
+        provider / models / default_model / chat_path when kind == "ai".
+        Use this to DISCOVER what ctx.call_connection / ctx.ai_chat can reach
+        — never hardcode connection ids and never require the browser to pass
+        them in. Same shape and filter as the browser SDK's listConnections()."""
+        ...
+
     def call_connection(self, id_or_name: str, method: str = "GET", path: str = "/",
                         query: dict[str, Any] | None = None,
                         headers: dict[str, Any] | None = None,

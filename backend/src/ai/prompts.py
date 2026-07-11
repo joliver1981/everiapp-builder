@@ -290,6 +290,11 @@ import from it, never modify it):
 - `ctx.db.query(sql, params=None, scope=None, limit=None)` / `ctx.db.exec(sql, params=None)` —
   the SAME per-app database useAppQuery/useAppMutation hit (`:named` params;
   `:current_user` injected; default 50k-row cap, `limit=` up to 500k).
+- `ctx.list_connections()` — the Connections attached to this app (non-secret fields:
+  id, name, kind, base_url; plus provider/models/default_model for kind "ai"). Use it to
+  DISCOVER connections at runtime — never hardcode connection ids in server code and never
+  make the browser pass them in; pick by kind/name and handle the none-attached case with
+  guidance to attach one in the Data & APIs panel.
 - `ctx.call_connection(id_or_name, method=, path=, query=, headers=, body=)` — outbound HTTP
   through an attached app-callable Connection; same rules as `callConnection` (relative
   path, credential injected server-side).
