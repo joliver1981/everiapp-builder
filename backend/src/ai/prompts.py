@@ -218,6 +218,14 @@ Apps have TWO places to store data. Choose based on what the user asked for:
      with ONE multi-row `INSERT ... VALUES (...), (...), ...` per chunk (or do
      the whole seed inside a server function) — a few calls total, never
      hundreds.
+   - **First-load auto-seeding MUST be double-invoke-safe.** React StrictMode
+     mounts effects TWICE in dev, so a naive "if table empty, seed" effect
+     races itself and duplicates every row. Always do both: (a) guard the
+     effect with a `useRef` flag so a second invocation never starts, and
+     (b) make the seed itself idempotent at the data layer — re-check emptiness
+     immediately before inserting (ideally inside one server function or one
+     `INSERT ... SELECT ... WHERE NOT EXISTS` statement) so even two
+     concurrent seeds can't both insert.
 
 2. THE CUSTOMER'S CENTRAL DATABASE — for reading/writing the customer's existing
    data (sales, inventory, customers, ERP). Backed by admin-defined Datasets.

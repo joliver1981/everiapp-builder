@@ -168,6 +168,18 @@ def test_prompt_teaches_server_functions():
     assert "server/sdk.py" in p and ("never edit" in p or "never modify" in p)
 
 
+def test_prompt_guards_bulk_and_first_load_seeding():
+    """Two seeding footguns found live in the 10-app campaign: row-per-INSERT
+    loops trip the app-DB rate limit (partial seeds), and StrictMode's double-
+    mounted effects duplicate naive first-load seeds. The prompt must teach
+    batched multi-row INSERTs and double-invoke-safe (idempotent) seeding."""
+    p = SYSTEM_PROMPT.lower()
+    assert "batched" in p and "multi-row" in p
+    assert "strictmode" in p or "double-invoke" in p
+    assert "idempotent" in p
+    assert "useref" in p
+
+
 def test_python_packages_block_renders_names_and_pins():
     """Admin-installed packages are per-instance state the model can learn
     ONLY from this injected block — it must render name==version lines and the
