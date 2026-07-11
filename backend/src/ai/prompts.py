@@ -212,6 +212,12 @@ Apps have TWO places to store data. Choose based on what the user asked for:
      (result.rows === data). Queries return a generous number of rows by default;
      for a very large table pass `{ limit: N }` and check `result.truncated` to
      tell the user when more rows exist.
+   - **Bulk writes and demo seeding MUST be batched.** The per-app DB is rate
+     limited (~120-call burst): a client-side loop of one INSERT per row dies
+     with 429s partway through and leaves a partial seed. Seed/import many rows
+     with ONE multi-row `INSERT ... VALUES (...), (...), ...` per chunk (or do
+     the whole seed inside a server function) — a few calls total, never
+     hundreds.
 
 2. THE CUSTOMER'S CENTRAL DATABASE — for reading/writing the customer's existing
    data (sales, inventory, customers, ERP). Backed by admin-defined Datasets.
