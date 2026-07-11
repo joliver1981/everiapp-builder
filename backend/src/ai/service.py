@@ -293,7 +293,14 @@ class AIService:
             content=user_message,
         )
         db.add(user_msg)
-        await db.flush()
+        # COMMIT (not flush) before the LLM stream starts. A flush opens
+        # SQLite's single-writer transaction and the old code held it for the
+        # entire multi-minute generation — every other writer on the platform
+        # (login's refresh-token insert, audit logs, admin actions) hit the 5s
+        # busy_timeout and 500'd with "database is locked". Session objects
+        # stay usable (expire_on_commit=False); the assistant message commits
+        # in its own short transaction at the end of the turn.
+        await db.commit()
 
         # Build messages for LLM (editor_context focuses the model on what the user is viewing)
         messages = await self._build_messages(db, conversation, app_id, editor_context=editor_context, user_id=user_id)
