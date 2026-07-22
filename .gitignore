@@ -39,6 +39,7 @@ data/*.db*
 # Runtime data
 data/apps/
 data/uploads/
+data/server-packages/
 
 # OS
 .DS_Store
