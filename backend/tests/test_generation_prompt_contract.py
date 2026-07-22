@@ -172,6 +172,27 @@ def test_prompt_teaches_server_functions():
     assert "server/sdk.py" in p and ("never edit" in p or "never modify" in p)
 
 
+def test_prompt_forbids_inventing_sql_schema_and_faking_data():
+    """EVERI-0002: the builder generated a server function with GUESSED tables
+    (orders/products) against an attached SQL connection whose real schema is
+    TS.sales/TS.product_master, and masked the failure with fabricated fallback
+    rows. The prompt must teach the truth so this can't recur: ctx.db is the
+    app's OWN store (not the customer DB), server functions have no direct
+    customer-DB/Dataset access, never invent table/column names, and never fake
+    sample rows to stand in for a real query — guide the user to a Dataset."""
+    p = SYSTEM_PROMPT.lower()
+    # ctx.db is the app's own store, explicitly distinguished from the customer DB.
+    assert "own" in p and "not the customer" in p
+    # No self-made DB connections / embedded creds in a function.
+    assert "pyodbc" in p  # the exact library the model reached for
+    assert "never open its own database connection" in p or "no built-in way to reach a customer sql database" in p
+    # Never invent schema; the governed path is a Dataset.
+    assert "admin → datasets" in p or "admin -> datasets" in p
+    assert "invent table" in p or "invent table/column names" in p
+    # The core harm: fabricated fallback that hides the failure.
+    assert "fabricate" in p and "hides the failure" in p
+
+
 def test_prompt_guards_bulk_and_first_load_seeding():
     """Two seeding footguns found live in the 10-app campaign: row-per-INSERT
     loops trip the app-DB rate limit (partial seeds), and StrictMode's double-
