@@ -297,7 +297,8 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
         return _result(fallback, "fallback", status="error", error="no AI provider configured")
     provider_type = provider_config["provider_type"]
     model = decision.model or provider_config["model"]
-    llm_model = model if provider_type == "openai" else f"{provider_type}/{model}"
+    from ..llm_compat import litellm_model
+    llm_model = litellm_model(provider_type, model)
 
     schema_note = ""
     if decision.output_schema_json:

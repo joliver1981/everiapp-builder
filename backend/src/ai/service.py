@@ -16,7 +16,7 @@ from .code_parser import parse_llm_response, extract_jump_directives, GeneratedF
 from .wizard_prompts import is_wizard_request, WIZARD_GENERATION_PROMPT
 from . import snapshots
 from .verifier import VerifyResult, VerifyError, errors_to_prompt_block, verify_app
-from ..llm_compat import acompletion
+from ..llm_compat import acompletion, litellm_model
 from ..ai_prompts import registry as prompt_registry
 from . import debug_log
 
@@ -342,12 +342,7 @@ class AIService:
             provider_type = provider_config["provider_type"]
             model = provider_config["model"]
 
-            # litellm model format. openai is the bare model name; everything
-            # else (anthropic, google, ollama, ...) uses "<provider>/<model>".
-            if provider_type == "openai":
-                llm_model = model
-            else:
-                llm_model = f"{provider_type}/{model}"
+            llm_model = litellm_model(provider_type, model)
 
             # --- Build the generation trace (full traceability) --------------
             from ..generation_trace.service import TraceBuilder
@@ -786,7 +781,7 @@ class AIService:
 
             provider_type = provider_config["provider_type"]
             model = provider_config["model"]
-            llm_model = model if provider_type == "openai" else f"{provider_type}/{model}"
+            llm_model = litellm_model(provider_type, model)
 
             try:
                 from ..platform_settings.service import get_output_cap

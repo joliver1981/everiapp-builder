@@ -259,11 +259,11 @@ async def run_analysis(
     )
 
     try:
-        from ..llm_compat import acompletion
+        from ..llm_compat import acompletion, litellm_model
 
         provider_type = provider_config["provider_type"]
         model = provider_config["model"]
-        llm_model = model if provider_type == "openai" else f"{provider_type}/{model}"
+        llm_model = litellm_model(provider_type, model)
 
         from ..platform_settings.service import get_output_cap
         response = await acompletion(

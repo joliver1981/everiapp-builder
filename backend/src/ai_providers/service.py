@@ -155,10 +155,10 @@ class AIProviderService:
             # Through the compat shim so a model that rejects a sampling param
             # still tests OK. Deliberately NOT metered in llm_usage: a 10-token
             # connectivity ping isn't app-attributable spend.
-            from ..llm_compat import acompletion
+            from ..llm_compat import acompletion, litellm_model
             start = time.time()
             response = await acompletion(
-                model=f"{provider_type}/{model}" if provider_type != "openai" else model,
+                model=litellm_model(provider_type, model),
                 messages=[{"role": "user", "content": "Say hello in exactly one word."}],
                 api_key=api_key,
                 base_url=meta.get("base_url") or None,

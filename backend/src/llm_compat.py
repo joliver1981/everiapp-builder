@@ -50,6 +50,32 @@ def _names_rejected_param(message: str, param: str) -> bool:
     return param in m and any(hint in m for hint in _REJECTION_HINTS)
 
 
+def litellm_model(provider_type: str | None, model: str | None) -> str:
+    """Compose the litellm model string from a provider's (type, model) pair.
+
+    ALWAYS provider-prefixed ("openai/gpt-5.5", "anthropic/claude-...").
+    We used to pass OpenAI models BARE and let litellm infer the provider from
+    its built-in model registry — which breaks for every OpenAI model newer
+    than the pinned litellm release ("LLM Provider NOT provided", hit live on
+    a fresh install with our own preset defaults gpt-5.5/gpt-5.4, while
+    Anthropic worked because it was prefixed). An explicit prefix skips
+    registry inference entirely, so brand-new model ids just work, and it is
+    also litellm's documented route for OpenAI-compatible base_url servers.
+
+    If the admin already typed the prefix ("openai/gpt-5.4"), it is not
+    doubled. Provider-NATIVE ids that themselves contain "/" (OpenRouter's
+    "anthropic/claude-3-opus") still get the provider prefix — only an exact
+    "<provider_type>/" prefix counts as already-routed.
+    """
+    m = (model or "").strip()
+    p = (provider_type or "").strip()
+    if not p or not m:
+        return m
+    if m.startswith(p + "/"):
+        return m
+    return f"{p}/{m}"
+
+
 async def acompletion(**kwargs):
     """``litellm.acompletion`` that survives provider parameter deprecations.
 
