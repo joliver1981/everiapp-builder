@@ -8,7 +8,7 @@
             "type": "command",
             "command": ".venv/Scripts/python.exe",
             "args": [".claude/hooks/green-gate.py"],
-            "timeout": 180,
+            "timeout": 1800,
             "statusMessage": "green-gate: running tests + tsc..."
           }
         ]

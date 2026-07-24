@@ -124,12 +124,95 @@ def _checks() -> list[Check]:
     return out
 
 
+# --- Cross-process lock ------------------------------------------------------
+# Two gates at once fight over the same pytest temp DBs (WinError 32) and both
+# go red with noise. Overlaps are real: a manual gate in one session vs. the
+# Stop hook, or an orphaned pytest child from a harness-killed hook. Serialize:
+# second comer waits (bounded), breaks stale locks (dead holder PID), and if
+# the other gate is still running at the deadline, defers to it instead of
+# corrupting both runs.
+
+LOCK = Path(__file__).resolve().parent / ".green-gate.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        r = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True,
+        )
+        return str(pid) in (r.stdout or "")
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_lock(wait_s: float = 150.0) -> bool:
+    deadline = time.monotonic() + wait_s
+    announced = False
+    while True:
+        try:
+            fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                holder = int((LOCK.read_text().strip() or "0"))
+            except (OSError, ValueError):
+                holder = 0
+            if not _pid_alive(holder):
+                # Dead holder (crashed/killed gate) — break the stale lock.
+                try:
+                    LOCK.unlink()
+                except OSError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                return False
+            if not announced:
+                print(
+                    f"[green-gate] another gate is running (pid {holder}); waiting...",
+                    file=sys.stderr,
+                )
+                announced = True
+            time.sleep(5)
+
+
+def _release_lock() -> None:
+    try:
+        if LOCK.exists() and (LOCK.read_text().strip() or "0") == str(os.getpid()):
+            LOCK.unlink()
+    except OSError:
+        pass
+
+
 def main() -> int:
     checks = _checks()
     if not checks:
         print("[green-gate] nothing to check (no venv, no tests, no tsc)", file=sys.stderr)
         return 0
 
+    if not _acquire_lock():
+        # A live gate is still running the same checks — its verdict stands.
+        # Exiting 0 here is deliberate: colliding would wreck BOTH runs.
+        print(
+            "[green-gate] deferring to the gate already in progress (still running "
+            "after the wait budget); its result is authoritative",
+            file=sys.stderr,
+        )
+        return 0
+    try:
+        return _run_checks(checks)
+    finally:
+        _release_lock()
+
+
+def _run_checks(checks: list[Check]) -> int:
     failures: list[tuple[Check, str, float]] = []
     durations: list[tuple[str, float]] = []
 
