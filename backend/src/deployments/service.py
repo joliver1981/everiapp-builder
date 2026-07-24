@@ -559,6 +559,10 @@ deployments_service = DeploymentsService()
 
 async def health_loop(interval: float = 30.0) -> None:
     """Periodically probe every running deployment so the UI stays accurate."""
+    # Short startup grace: don't add DB work to boot, and in short-lived
+    # lifespans (every TestClient test) shutdown then cancels us in this plain
+    # sleep instead of mid-DB-operation — the cleanest unwind path.
+    await asyncio.sleep(5)
     while True:
         try:
             async with async_session() as db:

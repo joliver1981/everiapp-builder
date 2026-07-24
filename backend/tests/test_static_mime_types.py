@@ -65,10 +65,11 @@ def test_spa_js_asset_served_with_javascript_mime_via_http():
     assert js_assets, "built dist has no index-*.js entry chunk"
     _pollute()
     _force_web_mime_types()
-    # Deliberately NOT a `with` block: static serving needs no lifespan, and
-    # lifespan shutdown has a latent nondeterministic hang (asyncio
-    # _cancel_all_tasks waits forever with an aiosqlite worker alive) that
-    # wedged this test twice — tracked separately; don't roll those dice here.
+    # Deliberately NOT a `with` block: static serving needs no lifespan, so
+    # skipping it keeps these tests cheap. (The lifespan-shutdown hang that
+    # originally forced this — asyncio _cancel_all_tasks waiting forever with
+    # an aiosqlite worker alive — is fixed in main.py's lifespan and locked in
+    # by test_lifespan_shutdown.py.)
     client = TestClient(app)
     r = client.get(f"/assets/{js_assets[-1].name}")
     assert r.status_code == 200

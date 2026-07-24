@@ -139,22 +139,36 @@ async def lifespan(app: FastAPI):
     from .backups.service import backup_loop
     from .tracing.service import retention_loop as trace_retention_loop
     from .tracing.writer import span_writer
-    health_task = asyncio.create_task(deployments_health_loop())
-    audit_task = asyncio.create_task(audit_rotation_loop())
-    siem_task = asyncio.create_task(siem_forwarder_loop())
-    backup_task = asyncio.create_task(backup_loop())
+    background_tasks = [
+        asyncio.create_task(deployments_health_loop(), name="deployments-health"),
+        asyncio.create_task(audit_rotation_loop(), name="audit-rotation"),
+        asyncio.create_task(siem_forwarder_loop(), name="siem-forwarder"),
+        asyncio.create_task(backup_loop(), name="backup"),
+        asyncio.create_task(trace_retention_loop(), name="trace-retention"),
+    ]
     span_writer.start()
-    trace_retention_task = asyncio.create_task(trace_retention_loop())
 
     logger.info("AIHub Platform started (debug=%s)", settings.debug)
     try:
         yield
     finally:
-        health_task.cancel()
-        audit_task.cancel()
-        siem_task.cancel()
-        backup_task.cancel()
-        trace_retention_task.cancel()
+        # Cancel AND REAP the background loops while the event loop is still
+        # fully alive. Leaving them merely cancel-requested hands them to
+        # asyncio.Runner.close()'s _cancel_all_tasks, whose SECOND cancellation
+        # can interrupt SQLAlchemy's shielded connection-terminate mid-close;
+        # the aiosqlite worker thread then exits on its stop sentinel with
+        # futures still queued behind it, and the abandoned close awaits one of
+        # those futures forever — a permanent shutdown hang (wedged pytest /
+        # nssm-killed service stops). Regression: tests/test_lifespan_shutdown.py
+        for t in background_tasks:
+            t.cancel()
+        _done, pending = await asyncio.wait(background_tasks, timeout=15)
+        if pending:
+            logger.error(
+                "shutdown: background task(s) ignored cancellation for 15s: %s "
+                "— event-loop teardown may hang",
+                [t.get_name() for t in pending],
+            )
         # Flush queued spans so a clean shutdown doesn't lose them.
         await span_writer.stop()
         # Shutdown: stop all running app processes
@@ -162,6 +176,12 @@ async def lifespan(app: FastAPI):
         from .runtime.proxy import close_client
         await runtime_manager.shutdown_all()
         await close_client()
+        # Last: close pooled DB connections. Each aiosqlite connection owns a
+        # worker thread that lives until the connection is closed — nothing
+        # else ever disposes the pool, so without this those threads outlive
+        # the loop (TestClient churn piles them up; service stops go slow).
+        from .database import engine
+        await engine.dispose()
 
 
 app = FastAPI(

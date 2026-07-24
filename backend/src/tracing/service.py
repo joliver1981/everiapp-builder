@@ -75,6 +75,9 @@ async def retention_loop() -> None:
     """Background task (started in lifespan) — same shape as backup_loop."""
     from ..database import async_session
 
+    # Startup grace (see deployments.service.health_loop): retention is in no
+    # hurry, and short-lived lifespans should cancel us in a plain sleep.
+    await asyncio.sleep(60)
     while True:
         try:
             async with async_session() as db:
