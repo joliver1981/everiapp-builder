@@ -279,6 +279,40 @@ if not settings.debug:
         )
 
 
+# --- MIME types: never trust the host OS registry ----------------------------
+# Starlette's StaticFiles/FileResponse resolve Content-Type via the stdlib
+# `mimetypes` module, which on Windows merges the MACHINE'S REGISTRY (HKCR
+# file-type mappings) into its tables. On real servers those are routinely
+# polluted — e.g. `.js` → text/plain — and browsers hard-refuse to execute a
+# <script type="module"> served with a non-JavaScript MIME type. The symptom is
+# a black empty page: HTML + CSS load (dark background applies), the JS bundle
+# is delivered with 200 but never runs, and not a single /api call follows.
+# Seen on a real v0.17.0 customer install. Pin every type the SPA and generated
+# apps ship so serving is deterministic on any machine. add_type() runs after
+# mimetypes' lazy init (which is what reads the registry), so these always win.
+def _force_web_mime_types() -> None:
+    import mimetypes
+
+    for mime, ext in (
+        ("text/javascript", ".js"),
+        ("text/javascript", ".mjs"),
+        ("text/css", ".css"),
+        ("text/html", ".html"),
+        ("image/svg+xml", ".svg"),
+        ("application/json", ".json"),
+        ("application/manifest+json", ".webmanifest"),
+        ("application/wasm", ".wasm"),
+        ("font/woff2", ".woff2"),
+        ("font/woff", ".woff"),
+        ("image/x-icon", ".ico"),
+        ("image/png", ".png"),
+    ):
+        mimetypes.add_type(mime, ext)
+
+
+_force_web_mime_types()
+
+
 # --- Static SPA serving (single-container / installer deployments) ----------
 # In dev, Vite serves the frontend on :5173 and proxies /api here, so the dist
 # folder doesn't exist and this block is skipped. In the Docker image (and the
