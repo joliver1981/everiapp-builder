@@ -543,7 +543,10 @@ function ProviderForm({ provider, onDone, onCancel }: {
             <Labeled label="Port"><input type="number" value={cfg.port ?? 389} onChange={(e) => setC({ port: Number(e.target.value) })} className={inputCls} /></Labeled>
             <Labeled label="Base DN"><input value={cfg.base_dn || ''} onChange={(e) => setC({ base_dn: e.target.value })} className={inputCls} placeholder="DC=corp,DC=local" /></Labeled>
             <Labeled label="Bind template"><input value={cfg.bind_template || ''} onChange={(e) => setC({ bind_template: e.target.value })} className={inputCls} placeholder="{username}@corp.local" /></Labeled>
-            <Labeled label="Bind password" hint="leave the ***REDACTED*** placeholder to keep the current value">
+            <Labeled label="Service account DN" hint="used by the connection test and the Users & Roles directory search">
+              <input value={cfg.service_bind_dn || ''} onChange={(e) => setC({ service_bind_dn: e.target.value })} className={inputCls} placeholder="CN=svc-everiapp,OU=Service Accounts,DC=corp,DC=local" />
+            </Labeled>
+            <Labeled label="Service account password" hint="leave the ***REDACTED*** placeholder to keep the current value">
               <input type="password" value={cfg.bind_password || ''} onChange={(e) => setC({ bind_password: e.target.value })} className={inputCls} />
             </Labeled>
           </div>

@@ -38,6 +38,12 @@ from .base import AuthResult, BaseAuthProvider
 
 logger = logging.getLogger(__name__)
 
+
+class LdapSearchError(Exception):
+    """A user search failed in a way the admin needs to hear about verbatim
+    (bad service bind, unreachable server, invalid filter) — the admin UI
+    surfaces str(exc) instead of silently showing zero results."""
+
 # AIHub role precedence — used to pick the "highest" role when a user is in
 # multiple mapped groups.
 _ROLE_RANK = {"user": 1, "developer": 2, "admin": 3}
@@ -220,16 +226,113 @@ class LdapAuthProvider(BaseAuthProvider):
                           error=f"LDAP authentication exhausted retries: {last_socket_error}")
 
     def test_connection(self) -> tuple[bool, str]:
+        where = f"{self._config.get('server', '?')}:{self._config.get('port', 389)}"
+        service_dn = (self._config.get("service_bind_dn") or "").strip()
         try:
             server = self._get_server()
+            if service_dn:
+                # Strongest test available: an authenticated service bind — the
+                # same identity the admin user-search uses.
+                conn = Connection(server, user=service_dn,
+                                  password=self._config.get("bind_password") or "",
+                                  auto_bind=True, receive_timeout=5, read_only=True)
+                conn.unbind()
+                return (True, f"Connected to {where} and bound as the service account")
             conn = Connection(server, auto_bind=False, receive_timeout=5)
             conn.open()
             ok = conn.bound or bool(server.info)
             conn.unbind()
-            where = f"{self._config['server']}:{self._config.get('port', 389)}"
             return (True, f"Connected to LDAP server at {where}") if ok else \
                    (True, "Connection opened successfully")
+        except LDAPBindError:
+            return (False, f"Connected to {where} but the service account bind was "
+                           f"rejected — check the service account DN and password")
         except LDAPSocketOpenError as e:
             return (False, f"Cannot connect to LDAP server: {e}")
         except Exception as e:
             return (False, f"Connection test failed: {e}")
+
+    # ----- admin user search ----------------------------------------------
+    # Default query filter: AD-shaped, matching login name / display name /
+    # mail on a contains basis. Overridable per-provider via config
+    # "user_query_filter" (must contain the {query} placeholder) for non-AD
+    # directories (e.g. "(uid=*{query}*)" for OpenLDAP).
+    _DEFAULT_QUERY_FILTER = (
+        "(&(objectClass=user)"
+        "(|(sAMAccountName=*{query}*)(displayName=*{query}*)(mail=*{query}*)))"
+    )
+
+    def _build_search_filter(self, query: str) -> str:
+        from ldap3.utils.conv import escape_filter_chars
+        template = self._config.get("user_query_filter") or self._DEFAULT_QUERY_FILTER
+        return template.replace("{query}", escape_filter_chars(query))
+
+    def search_users(self, query: str, limit: int = 20) -> list[dict]:
+        """Search the directory for users (admin Users & Roles page).
+
+        Binds as the configured service account (config "service_bind_dn" +
+        "bind_password"); falls back to an anonymous bind, which most AD
+        deployments reject for search — the raised LdapSearchError says so
+        rather than letting that read as "no results".
+        """
+        service_dn = (self._config.get("service_bind_dn") or "").strip()
+        server = self._get_server()
+        try:
+            if service_dn:
+                conn = Connection(server, user=service_dn,
+                                  password=self._config.get("bind_password") or "",
+                                  auto_bind=True, receive_timeout=10, read_only=True)
+            else:
+                conn = Connection(server, auto_bind=True, receive_timeout=10,
+                                  read_only=True)
+        except LDAPBindError as e:
+            raise LdapSearchError(
+                "Service account bind failed — check the service account DN and "
+                "password on the LDAP provider"
+            ) from e
+        except LDAPSocketOpenError as e:
+            raise LdapSearchError(f"Cannot connect to LDAP server: {e}") from e
+        except LDAPException as e:
+            raise LdapSearchError(f"LDAP error: {e}") from e
+
+        try:
+            search_base = self._config.get("user_search_base") or self._config.get("base_dn", "")
+            conn.search(
+                search_base=search_base,
+                search_filter=self._build_search_filter(query),
+                search_scope=SUBTREE,
+                attributes=["sAMAccountName", "uid", "cn", "displayName", "mail"],
+                size_limit=limit,
+            )
+            results = []
+            for entry in conn.entries:
+                def _val(name: str) -> str:
+                    attr = getattr(entry, name, None)
+                    return str(attr.value) if attr is not None and attr.value else ""
+                username = _val("sAMAccountName") or _val("uid") or _val("cn")
+                if not username:
+                    continue
+                results.append({
+                    "username": username,
+                    "display_name": _val("displayName") or username,
+                    "email": _val("mail"),
+                })
+            if not results and not service_dn:
+                # Anonymous binds commonly succeed but are not allowed to
+                # SEARCH — zero results is indistinguishable from that unless
+                # we say it.
+                raise LdapSearchError(
+                    "Search returned nothing over an anonymous bind — most "
+                    "directories require a service account for search. Set a "
+                    "service account DN on the LDAP provider."
+                )
+            return results
+        except LdapSearchError:
+            raise
+        except LDAPException as e:
+            raise LdapSearchError(f"LDAP search failed: {e}") from e
+        finally:
+            try:
+                conn.unbind()
+            except Exception:
+                pass

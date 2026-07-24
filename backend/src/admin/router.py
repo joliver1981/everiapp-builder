@@ -124,19 +124,80 @@ async def encryption_status(
 
 
 # ---- AD Connection Endpoints ----
+#
+# These back the Users & Roles page's "Active Directory Connection" panel.
+# They MUST use the DB-configured LDAP identity provider (Admin → Platform →
+# Authentication) when one is enabled — a production install configures LDAP
+# there, not via env vars. The env-based ad_client is the DEV mock only; it
+# used to be called unconditionally here, so a fully configured production
+# install answered "Mock mode — no real AD connection needed" and searched
+# three fake users. Field-reported on a real install.
+
+
+async def _enabled_ldap_provider(db: AsyncSession):
+    """(config_row, LdapAuthProvider) for the first enabled LDAP provider, or None."""
+    import json as _json
+    from ..auth.providers.chain import get_enabled_providers
+    from ..auth.providers.ldap_provider import LDAP3_AVAILABLE, LdapAuthProvider
+
+    for cfg in await get_enabled_providers(db):
+        if cfg.provider_type != "ldap":
+            continue
+        if not LDAP3_AVAILABLE:
+            raise HTTPException(status_code=503, detail="ldap3 is not installed on the platform")
+        try:
+            config = _json.loads(cfg.config_json or "{}")
+        except ValueError:
+            continue
+        return cfg, LdapAuthProvider(config=config)
+    return None
+
 
 @router.post("/ad/test")
 async def test_ad_connection(
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("admin")),
 ):
-    """Test the Active Directory connection."""
-    return ad_client.test_connection()
+    """Test the directory connection of the configured LDAP identity provider."""
+    from ..config import settings
+
+    found = await _enabled_ldap_provider(db)
+    if found is not None:
+        cfg, provider = found
+        ok, msg = provider.test_connection()
+        return {"success": ok, "message": f"{cfg.provider_name}: {msg}", "mode": "ldap"}
+    if settings.debug:
+        return ad_client.test_connection()
+    return {
+        "success": False,
+        "message": "No LDAP identity provider is enabled. Configure one under "
+                   "Admin → Platform → Authentication; this panel tests and "
+                   "searches that provider.",
+        "mode": "unconfigured",
+    }
 
 
 @router.get("/ad/search")
 async def search_ad_users(
     q: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("admin")),
 ):
-    """Search Active Directory for users."""
-    return ad_client.search_users(q)
+    """Search the configured LDAP directory for users."""
+    from ..config import settings
+    from ..auth.providers.ldap_provider import LdapSearchError
+
+    found = await _enabled_ldap_provider(db)
+    if found is not None:
+        _cfg, provider = found
+        try:
+            return provider.search_users(q)
+        except LdapSearchError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if settings.debug:
+        return ad_client.search_users(q)
+    raise HTTPException(
+        status_code=400,
+        detail="No LDAP identity provider is enabled — configure one under "
+               "Admin → Platform → Authentication to search your directory.",
+    )

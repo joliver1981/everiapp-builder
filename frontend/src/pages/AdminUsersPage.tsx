@@ -41,6 +41,7 @@ export function AdminUsersPage() {
   const [isTesting, setIsTesting] = useState(false)
   const [adSearchQuery, setAdSearchQuery] = useState('')
   const [adSearchResults, setAdSearchResults] = useState<any[]>([])
+  const [adSearchError, setAdSearchError] = useState<string | null>(null)
   const [isSearching, setIsSearching] = useState(false)
   // Create local account
   const [showCreate, setShowCreate] = useState(false)
@@ -125,11 +126,20 @@ export function AdminUsersPage() {
   const handleAdSearch = async () => {
     if (!adSearchQuery.trim()) return
     setIsSearching(true)
+    setAdSearchError(null)
     try {
       const results = await apiClient.get<any[]>(`/admin/ad/search?q=${encodeURIComponent(adSearchQuery)}`)
       setAdSearchResults(results)
-    } catch {
+      if (results.length === 0) setAdSearchError('No matching directory users found.')
+    } catch (e: any) {
+      // Surface the backend's explanation (unconfigured provider, failed
+      // service bind, unreachable server) — an empty list here used to read
+      // as "search is broken" with no way to know why. ApiError.message is
+      // the raw response body, usually {"detail": "..."}.
       setAdSearchResults([])
+      let msg = e?.message || 'Directory search failed'
+      try { msg = JSON.parse(msg)?.detail || msg } catch { /* not JSON */ }
+      setAdSearchError(msg)
     } finally {
       setIsSearching(false)
     }
@@ -218,6 +228,9 @@ export function AdminUsersPage() {
                 {isSearching ? <Loader2 size={12} className="animate-spin" /> : 'Search'}
               </button>
             </div>
+            {adSearchError && (
+              <p className="mt-2 text-xs text-amber-500">{adSearchError}</p>
+            )}
             {adSearchResults.length > 0 && (
               <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-border">
                 {adSearchResults.map((r, i) => (
