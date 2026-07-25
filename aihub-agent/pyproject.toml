@@ -1,6 +1,6 @@
 [project]
 name = "aihub-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "Deployment agent for the AIHub Platform — runs built apps on a target host with managed ports."
 requires-python = ">=3.10"
 dependencies = [
