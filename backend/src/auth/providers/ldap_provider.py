@@ -257,8 +257,11 @@ class LdapAuthProvider(BaseAuthProvider):
     # mail on a contains basis. Overridable per-provider via config
     # "user_query_filter" (must contain the {query} placeholder) for non-AD
     # directories (e.g. "(uid=*{query}*)" for OpenLDAP).
+    # (!(objectClass=computer)): AD machine accounts also carry
+    # objectClass=user, so without the exclusion the admin search lists
+    # WORKSTATION$ accounts alongside people.
     _DEFAULT_QUERY_FILTER = (
-        "(&(objectClass=user)"
+        "(&(objectClass=user)(!(objectClass=computer))"
         "(|(sAMAccountName=*{query}*)(displayName=*{query}*)(mail=*{query}*)))"
     )
 

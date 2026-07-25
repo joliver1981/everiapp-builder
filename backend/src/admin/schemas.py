@@ -27,3 +27,11 @@ class CreateUserRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     new_password: str
+
+
+class ProvisionADUserRequest(BaseModel):
+    """Pre-provision a directory user found via the AD search."""
+    username: str
+    display_name: str = ""
+    email: str = ""
+    role: str = "user"  # admin, developer, user

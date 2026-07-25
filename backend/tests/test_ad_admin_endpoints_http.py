@@ -136,6 +136,96 @@ def test_debug_without_provider_keeps_dev_mock(client, admin_headers):
     assert any(u["username"] == "admin" for u in r2.json())
 
 
+def test_provision_ad_user_creates_ldap_account(client, admin_headers):
+    r = client.post("/api/admin/ad/provision", headers=admin_headers, json={
+        "username": "jdoe", "display_name": "Jane Doe",
+        "email": "jdoe@corp.local", "role": "developer",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["username"] == "jdoe"
+    assert body["role"] == "developer"
+    assert body["is_active"] is True
+    # Visible in the users list, provisioned as an LDAP identity.
+    listing = client.get("/api/admin/users", headers=admin_headers)
+    assert listing.status_code == 200
+    row = next(u for u in listing.json() if u["username"] == "jdoe")
+    assert row["role"] == "developer"
+
+    # Duplicate → 409, invalid role → 400.
+    dup = client.post("/api/admin/ad/provision", headers=admin_headers,
+                      json={"username": "jdoe", "role": "user"})
+    assert dup.status_code == 409
+    bad = client.post("/api/admin/ad/provision", headers=admin_headers,
+                      json={"username": "zz-new", "role": "superadmin"})
+    assert bad.status_code == 400
+
+
+def test_provision_requires_admin(client):
+    r = client.post("/api/auth/login", json={"username": "user", "password": "password"})
+    assert r.status_code == 200
+    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    resp = client.post("/api/admin/ad/provision", headers=headers,
+                       json={"username": "nope", "role": "admin"})
+    assert resp.status_code in (401, 403)
+
+
+def test_provisioned_role_sticks_without_group_mapping(aiosqlite_drain):
+    """The pre-provision contract: without a group→role mapping the assigned
+    role survives logins; with one, AD groups win on every login."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from src.database import Base
+    from src.auth.models import User
+    from src.auth.providers.base import AuthResult
+    from src.auth.providers.chain import provision_user
+
+    async def _run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            from src.auth.models import RefreshToken  # noqa: F401
+            from src.apps.models import App, AppPermission, AppSetting, AppVersion, Conversation, Message  # noqa: F401
+            from src.secrets.models import AuditLog, Secret  # noqa: F401
+            from src.marketplace.models import MarketplaceListing  # noqa: F401
+            from src.deployments.models import Deployment, DeploymentTarget  # noqa: F401
+            from src.bug_reports.models import BugAnalysis, BugReport, FixAttempt  # noqa: F401
+            from src.connections.models import Connection  # noqa: F401
+            from src.datasets.models import AppDatasetBinding, Dataset  # noqa: F401
+            await conn.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        result = AuthResult(success=True, username="pat", display_name="Pat",
+                            email="pat@corp.local", external_id="pat", groups=[])
+        async with Session() as s:
+            # Pre-provisioned admin (as POST /api/admin/ad/provision creates).
+            s.add(User(username="pat", display_name="Pat", email="pat@corp.local",
+                       role="admin", auth_provider="ldap", external_id="pat"))
+            await s.commit()
+
+            # Login WITHOUT mapping: role must stick.
+            u = await provision_user(s, auth_provider="ldap", result=result,
+                                     role="user", auto_provision=True,
+                                     role_from_mapping=False)
+            assert u is not None and u.role == "admin"
+
+            # Login WITH mapping: AD groups are the source of truth.
+            u = await provision_user(s, auth_provider="ldap", result=result,
+                                     role="developer", auto_provision=True,
+                                     role_from_mapping=True)
+            assert u is not None and u.role == "developer"
+            await s.commit()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_default_search_filter_excludes_computer_accounts():
+    provider = LdapAuthProvider.__new__(LdapAuthProvider)
+    provider._config = {}
+    f = provider._build_search_filter("jol")
+    assert "(!(objectClass=computer))" in f
+
+
 def test_search_filter_is_escaped_against_injection():
     provider = LdapAuthProvider.__new__(LdapAuthProvider)  # skip ldap3 import guard
     provider._config = {}

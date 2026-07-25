@@ -483,7 +483,9 @@ function ProviderForm({ provider, onDone, onCancel }: {
   const [enabled, setEnabled] = useState(provider.is_enabled ?? true)
   const [isDefault, setIsDefault] = useState(provider.is_default ?? false)
   const [autoProvision, setAutoProvision] = useState(provider.auto_provision ?? true)
-  const [groupMap, setGroupMap] = useState(JSON.stringify(provider.group_role_mapping || {}, null, 2))
+  const [mapRows, setMapRows] = useState<{ group: string; role: string }[]>(
+    Object.entries(provider.group_role_mapping || {}).map(([group, role]) => ({ group, role: String(role) }))
+  )
   const [cfg, setCfg] = useState<any>(provider.config || {})
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -491,13 +493,9 @@ function ProviderForm({ provider, onDone, onCancel }: {
 
   const save = async () => {
     setError(null)
-    let mapping: any
-    try {
-      mapping = JSON.parse(groupMap || '{}')
-    } catch {
-      setError('Group→role mapping must be valid JSON, e.g. {"Domain Admins": "admin"}')
-      return
-    }
+    const mapping = Object.fromEntries(
+      mapRows.filter((r) => r.group.trim()).map((r) => [r.group.trim(), r.role])
+    )
     setSaving(true)
     try {
       const body: any = {
@@ -610,8 +608,47 @@ function ProviderForm({ provider, onDone, onCancel }: {
       )}
 
       <Section title="Role mapping & behavior">
-        <Labeled label="Group → role mapping (JSON)" hint='e.g. {"Domain Admins":"admin","Developers":"developer"} — highest role wins'>
-          <textarea value={groupMap} onChange={(e) => setGroupMap(e.target.value)} className={cn(inputCls, 'min-h-[70px] font-mono text-xs')} />
+        <Labeled
+          label="Group → role mapping"
+          hint="directory group name → EveriApp role; highest role wins. When ANY mapping is set, groups control roles at every sign-in; leave empty to manage roles manually (pre-provisioned and hand-assigned roles then stick)."
+        >
+          <div className="space-y-1.5">
+            {mapRows.map((row, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input
+                  value={row.group}
+                  onChange={(e) => setMapRows((rs) => rs.map((r, j) => (j === i ? { ...r, group: e.target.value } : r)))}
+                  placeholder="AD group name, e.g. EveriApp-Admins"
+                  className={cn(inputCls, 'flex-1')}
+                />
+                <span className="text-xs text-muted-foreground">→</span>
+                <select
+                  value={row.role}
+                  onChange={(e) => setMapRows((rs) => rs.map((r, j) => (j === i ? { ...r, role: e.target.value } : r)))}
+                  className={cn(inputCls, 'w-32')}
+                >
+                  <option value="user">user</option>
+                  <option value="developer">developer</option>
+                  <option value="admin">admin</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setMapRows((rs) => rs.filter((_, j) => j !== i))}
+                  className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  title="Remove mapping"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setMapRows((rs) => [...rs, { group: '', role: 'user' }])}
+              className="rounded-md border border-dashed border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              + Add group mapping
+            </button>
+          </div>
         </Labeled>
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="Default role" hint="when no group matches">

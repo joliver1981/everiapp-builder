@@ -6,6 +6,7 @@ from ..auth.models import User
 from ..auth.ad_client import ad_client
 from .schemas import (
     UserListResponse, RoleUpdateRequest, CreateUserRequest, ResetPasswordRequest,
+    ProvisionADUserRequest,
 )
 from .service import admin_service
 from ..auth.service import auth_service
@@ -175,6 +176,50 @@ async def test_ad_connection(
                    "searches that provider.",
         "mode": "unconfigured",
     }
+
+
+@router.post("/ad/provision", response_model=UserListResponse, status_code=201)
+async def provision_ad_user(
+    body: ProvisionADUserRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
+    """Pre-create an account for a directory user before their first login.
+
+    The row is an LDAP-provider identity (no password); the user signs in with
+    their directory credentials and provision_user() matches this row by
+    username. The assigned role STICKS across logins as long as the LDAP
+    provider has no group→role mapping configured — with a mapping, AD groups
+    are the source of truth on every sign-in (see auth/providers/chain.py).
+    """
+    if body.role not in ("admin", "developer", "user"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+    username = body.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    if await auth_service.get_user_by_username(db, username):
+        raise HTTPException(status_code=409, detail="That user already has an account.")
+
+    from ..secrets.models import AuditLog
+    new_user = User(
+        username=username,
+        display_name=(body.display_name or "").strip() or username,
+        email=(body.email or "").strip(),
+        role=body.role,
+        auth_provider="ldap",
+        external_id=username,
+    )
+    db.add(new_user)
+    await db.flush()  # id needed for the audit row (defaults land at flush)
+    db.add(AuditLog(
+        user_id=user.id,
+        action="admin.ad_provision",
+        resource_type="user",
+        resource_id=new_user.id,
+        details=f"Pre-provisioned directory user '{username}' as {body.role}",
+    ))
+    await db.commit()
+    return _user_list_response(new_user)
 
 
 @router.get("/ad/search")

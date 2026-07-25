@@ -43,6 +43,10 @@ export function AdminUsersPage() {
   const [adSearchResults, setAdSearchResults] = useState<any[]>([])
   const [adSearchError, setAdSearchError] = useState<string | null>(null)
   const [isSearching, setIsSearching] = useState(false)
+  // Pre-provisioning from search results
+  const [provisionRole, setProvisionRole] = useState<Record<string, string>>({})
+  const [provisionBusy, setProvisionBusy] = useState<string | null>(null)
+  const [provisionMsg, setProvisionMsg] = useState<Record<string, string>>({})
   // Create local account
   const [showCreate, setShowCreate] = useState(false)
   const [cUser, setCUser] = useState('')
@@ -145,6 +149,24 @@ export function AdminUsersPage() {
     }
   }
 
+  const handleProvision = async (r: any) => {
+    const role = provisionRole[r.username] || 'user'
+    setProvisionBusy(r.username)
+    try {
+      await apiClient.post('/admin/ad/provision', {
+        username: r.username, display_name: r.display_name || '', email: r.email || '', role,
+      })
+      setProvisionMsg((m) => ({ ...m, [r.username]: `Account created as ${role}` }))
+      fetchUsers()
+    } catch (e: any) {
+      let msg = e?.message || 'Failed to create account'
+      try { msg = JSON.parse(msg)?.detail || msg } catch { /* not JSON */ }
+      setProvisionMsg((m) => ({ ...m, [r.username]: msg }))
+    } finally {
+      setProvisionBusy(null)
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -233,15 +255,46 @@ export function AdminUsersPage() {
             )}
             {adSearchResults.length > 0 && (
               <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-border">
-                {adSearchResults.map((r, i) => (
-                  <div key={i} className="flex items-center gap-3 border-b border-border px-3 py-2 last:border-0">
-                    <UserIcon size={12} className="shrink-0 text-muted-foreground" />
-                    <div>
-                      <p className="text-xs font-medium">{r.display_name || r.username}</p>
-                      <p className="text-[10px] text-muted-foreground">{r.username} &middot; {r.email}</p>
+                {adSearchResults.map((r, i) => {
+                  const hasAccount = users.some(
+                    (u) => u.username.toLowerCase() === String(r.username).toLowerCase()
+                  )
+                  const msg = provisionMsg[r.username]
+                  return (
+                    <div key={i} className="flex items-center gap-3 border-b border-border px-3 py-2 last:border-0">
+                      <UserIcon size={12} className="shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium">{r.display_name || r.username}</p>
+                        <p className="truncate text-[10px] text-muted-foreground">{r.username} &middot; {r.email}</p>
+                        {msg && <p className="text-[10px] text-amber-500">{msg}</p>}
+                      </div>
+                      {hasAccount ? (
+                        <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                          Has account
+                        </span>
+                      ) : (
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <select
+                            value={provisionRole[r.username] || 'user'}
+                            onChange={(e) => setProvisionRole((m) => ({ ...m, [r.username]: e.target.value }))}
+                            className="rounded-md border border-border bg-background px-1.5 py-1 text-[10px]"
+                          >
+                            <option value="user">user</option>
+                            <option value="developer">developer</option>
+                            <option value="admin">admin</option>
+                          </select>
+                          <button
+                            onClick={() => handleProvision(r)}
+                            disabled={provisionBusy === r.username}
+                            className="rounded-md bg-primary px-2 py-1 text-[10px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            {provisionBusy === r.username ? 'Creating…' : 'Create account'}
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>

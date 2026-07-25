@@ -74,6 +74,7 @@ async def _try_ldap(db: AsyncSession, username: str, password: str,
         return await provision_user(
             db, auth_provider="ldap", result=result, role=role,
             auto_provision=cfg.auto_provision,
+            role_from_mapping=bool(group_map),
         )
     except Exception as e:
         logger.error("LDAP auth error for provider %s: %s", cfg.provider_name, e)
@@ -81,11 +82,20 @@ async def _try_ldap(db: AsyncSession, username: str, password: str,
 
 
 async def provision_user(db: AsyncSession, *, auth_provider: str, result: AuthResult,
-                         role: str, auto_provision: bool) -> User | None:
+                         role: str, auto_provision: bool,
+                         role_from_mapping: bool = True) -> User | None:
     """Find-or-create a local User from an external AuthResult.
 
     Matches on (auth_provider, external_id) first, then username. Updates the
-    record on repeat logins so display name / email / groups / role stay fresh.
+    record on repeat logins so display name / email / groups stay fresh.
+
+    Role semantics: when the provider HAS a group→role mapping
+    (role_from_mapping=True), AD groups are the source of truth and the role
+    is re-derived on every login. WITHOUT a mapping, `role` is just the
+    provider's default — overwriting an existing row with it would silently
+    demote admin-assigned roles (e.g. a pre-provisioned admin from
+    POST /api/admin/ad/provision, or a manual change in Users & Roles), so
+    the existing role is kept.
     """
     # Try by external identity
     existing = (await db.execute(
@@ -122,7 +132,8 @@ async def provision_user(db: AsyncSession, *, auth_provider: str, result: AuthRe
     # Update existing
     existing.display_name = result.display_name or existing.display_name
     existing.email = result.email or existing.email
-    existing.role = role
+    if role_from_mapping:
+        existing.role = role
     existing.ad_groups = json.dumps(result.groups)
     existing.auth_provider = auth_provider
     existing.external_id = result.external_id
