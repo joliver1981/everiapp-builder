@@ -21,7 +21,7 @@ from src.database_tuning import (
 
 
 @pytest.fixture
-async def tuned_engine():
+async def tuned_engine(aiosqlite_drain):
     """Fresh in-memory engine with tuning applied — matches what init_db does."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     apply_sqlite_tuning(engine)

@@ -39,7 +39,7 @@ from src.database_tuning import apply_index_migrations, apply_sqlite_tuning
 # Fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture
-async def fresh_engine(tmp_path):
+async def fresh_engine(tmp_path, aiosqlite_drain):
     """Fresh engine pointed at an on-disk SQLite file (in-memory doesn't keep
     file-mode features like WAL, but file-mode does)."""
     db_path = tmp_path / "rotation.db"

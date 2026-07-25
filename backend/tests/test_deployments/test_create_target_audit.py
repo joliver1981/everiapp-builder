@@ -28,7 +28,7 @@ async def _make_agent_token_secret(db: AsyncSession) -> str:
 
 
 @pytest.fixture
-async def db():
+async def db(aiosqlite_drain):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         from src.auth.models import RefreshToken, User  # noqa

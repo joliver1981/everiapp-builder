@@ -58,7 +58,7 @@ def test_cost_unknown_provider_is_zero():
 
 
 @pytest.mark.asyncio
-async def test_record_and_summarize_usage():
+async def test_record_and_summarize_usage(aiosqlite_drain):
     """Integration: record + query via a per-test in-memory engine, no global
     reloads (which we learned the hard way are flaky across files)."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

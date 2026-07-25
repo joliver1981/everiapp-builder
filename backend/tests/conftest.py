@@ -1,6 +1,8 @@
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -29,3 +31,52 @@ os.environ.setdefault(
 @pytest.fixture
 def tmp_app_dir(tmp_path):
     return tmp_path
+
+
+# --- aiosqlite worker-thread drain -------------------------------------------
+# engine.dispose() only QUEUES each pooled connection's close — it does NOT
+# join the connection's worker thread. When a pytest-asyncio function-scoped
+# event loop closes before that thread exits, sqlite3's C objects get
+# finalized cross-thread, which intermittently kills the whole suite with
+# "Windows fatal exception: access violation" (seen 2026-07-24 at ~47%
+# progress under heavy machine load; faulthandler showed the pytest-asyncio
+# finalizer closing the loop with an aiosqlite _connection_worker_thread
+# alive). Any fixture that creates its own async engine must depend on
+# `aiosqlite_drain` FIRST so teardown waits for the workers it spawned.
+
+def _aiosqlite_worker_idents() -> set[int]:
+    return {
+        t.ident for t in threading.enumerate()
+        if "_connection_worker_thread" in (t.name or "")
+    }
+
+
+def drain_aiosqlite_workers(baseline: frozenset[int] | set[int] = frozenset(),
+                            timeout: float = 5.0) -> None:
+    """Wait (bounded, best-effort) for aiosqlite worker threads beyond
+    `baseline` to exit. Never raises: a stuck thread should surface in the
+    next crash dump, not hang teardown."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not (_aiosqlite_worker_idents() - set(baseline)):
+            return
+        time.sleep(0.005)
+
+
+@pytest.fixture
+def aiosqlite_drain():
+    """Depend on this BEFORE creating a per-test async engine:
+
+        @pytest.fixture
+        async def db(aiosqlite_drain):
+            engine = create_async_engine(...)
+            ...
+            await engine.dispose()
+
+    Setup snapshots the worker threads that already exist (e.g. the global
+    engine's pool); teardown runs AFTER the depending fixture's dispose and
+    BEFORE pytest-asyncio closes the test's event loop, and waits only for
+    the NEW workers — the ones this test's engine spawned — to exit."""
+    baseline = _aiosqlite_worker_idents()
+    yield
+    drain_aiosqlite_workers(baseline)

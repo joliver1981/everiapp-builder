@@ -11,7 +11,7 @@ from src.database import Base
 
 
 @pytest.fixture
-async def db():
+async def db(aiosqlite_drain):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         # Import every model so create_all sees the full graph (FKs from

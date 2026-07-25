@@ -54,6 +54,23 @@ def test_pinned_types_win_over_polluted_registry():
     assert mimetypes.guess_type("app.wasm")[0] == "application/wasm"
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _dispose_global_engine_after_module():
+    """These tests deliberately use TestClient WITHOUT lifespan, so nothing
+    disposes the global engine afterward — any pooled aiosqlite connection a
+    request created would outlive its (dead) portal loop as a zombie worker
+    thread, a standing access-violation risk for later loop teardowns. Dispose
+    + drain at module end; no-op when no request touched the DB."""
+    yield
+    import asyncio
+
+    from conftest import drain_aiosqlite_workers
+    from src.database import engine
+
+    asyncio.run(engine.dispose())
+    drain_aiosqlite_workers()
+
+
 @pytest.mark.skipif(
     not (_DIST / "index.html").is_file(), reason="frontend/dist not built"
 )

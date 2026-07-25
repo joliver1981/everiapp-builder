@@ -7,7 +7,7 @@ from src.deployments.service import DeploymentsService
 
 
 @pytest.fixture
-async def db():
+async def db(aiosqlite_drain):
     # Each test gets its own in-memory DB.
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
