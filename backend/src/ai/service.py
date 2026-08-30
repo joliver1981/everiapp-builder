@@ -13,7 +13,9 @@ from ..apps.models import App, Conversation, Message
 from ..ai_providers.service import ai_provider_service
 from .prompts import SYSTEM_PROMPT, CONTINUATION_PROMPT, available_datasets_block, NO_DATASETS_NOTICE, JUMP_DIRECTIVE_PROMPT
 from ..datasets.service import datasets_service
-from .code_parser import parse_llm_response, extract_jump_directives, GeneratedFile
+from .code_parser import (
+    parse_llm_response, extract_jump_directives, find_unterminated_file, GeneratedFile,
+)
 from .wizard_prompts import is_wizard_request, WIZARD_GENERATION_PROMPT
 from . import snapshots
 from .verifier import VerifyResult, VerifyError, errors_to_prompt_block, verify_app
@@ -458,6 +460,7 @@ class AIService:
             full_response = ""
             _usage_in = 0
             _usage_out = 0
+            _finish_reason: str | None = None
 
             from ..platform_settings.service import get_output_cap
             response = await acompletion(
@@ -495,6 +498,9 @@ class AIService:
                     _usage_out = getattr(_u, "completion_tokens", 0) or _usage_out
                 if not chunk.choices:
                     continue
+                _fr = getattr(chunk.choices[0], "finish_reason", None)
+                if _fr:
+                    _finish_reason = _fr
                 delta = chunk.choices[0].delta
                 if delta.content:
                     full_response += delta.content
@@ -520,6 +526,30 @@ class AIService:
             debug_log.log("generated", app_id=app_id, description=(description or "")[:1000],
                           raw_response=debug_log.raw(full_response),
                           files=debug_log.files_payload(files))
+
+            # Loud-truncation guard. A response cut at an output-length limit
+            # leaves its trailing file block unterminated, and the parser (which
+            # requires the closing fence) silently drops it — the downstream
+            # symptom is a baffling "Cannot find module" at a client site. Name
+            # the casualty in the chat instead of letting verify discover it.
+            truncated_file = find_unterminated_file(full_response)
+            if _finish_reason == "length" or truncated_file:
+                _casualty = (f" The incomplete file `{truncated_file}` was **not** saved."
+                             if truncated_file else "")
+                trunc_note = (
+                    "\n\n⚠️ **This response was cut off at the model's maximum output "
+                    f"length.**{_casualty} Ask me to continue and I'll produce the missing "
+                    "pieces, or split the request into smaller steps."
+                )
+                yield {"type": "text", "data": trunc_note}
+                description = (description or "") + trunc_note
+                debug_log.log("truncated", app_id=app_id,
+                              finish_reason=_finish_reason, dropped_file=truncated_file)
+                logger.warning("Generation truncated for %s (finish_reason=%s, dropped=%s)",
+                               app_id, _finish_reason, truncated_file)
+                if trace is not None:
+                    trace.step(type="truncated", finish_reason=_finish_reason or "",
+                               dropped_file=truncated_file or "")
 
             if trace is not None:
                 trace.set_files([{"path": f.path, "action": f.action} for f in files])
@@ -957,22 +987,46 @@ class AIService:
 
             fix_files, _fix_desc, _fix_wizard = parse_llm_response(raw)
             last_response = raw
+            _fix_finish = getattr(fix_response.choices[0], "finish_reason", None)
+            _fix_dropped = find_unterminated_file(raw)
             debug_log.log("fix", app_id=app_id, iteration=iteration,
                           errors_fed=debug_log.raw(_errors_block),
                           raw_response=debug_log.raw(raw),
+                          finish_reason=_fix_finish, dropped_file=_fix_dropped,
                           files=debug_log.files_payload(fix_files))
 
             if not fix_files:
-                # LLM didn't propose any file changes — nothing to retry.
+                # Distinguish "the model proposed nothing" from "the fix was cut
+                # off before any complete file" — the latter looked identical
+                # and sent operators hunting phantom model failures.
+                if _fix_finish == "length" or _fix_dropped:
+                    _summary = (
+                        "Fix response was cut off at the model's maximum output length "
+                        "before a complete file"
+                        + (f" (incomplete: {_fix_dropped})" if _fix_dropped else "")
+                        + " — stopping. Ask me to fix it in smaller steps."
+                    )
+                else:
+                    _summary = "LLM produced no file changes; stopping"
                 yield {"type": "verify_iteration", "data": {
                     "iteration": iteration,
                     "passed": False,
                     "stage": "fix",
-                    "summary": "LLM produced no file changes; stopping",
+                    "summary": _summary,
                     "errors": [],
                 }}
                 yield {"type": "_final_verify", "data": _attach_config_guidance(result)}
                 return
+
+            if _fix_finish == "length" or _fix_dropped:
+                # Some files landed but the tail was cut — say so; the next
+                # verify pass will surface what's still broken.
+                yield {"type": "text", "data": (
+                    "\n\n⚠️ This fix was cut off at the model's maximum output length"
+                    + (f" — the incomplete file `{_fix_dropped}` was **not** saved"
+                       if _fix_dropped else "")
+                    + "."
+                )}
 
             await self._save_generated_files(app_id, fix_files)
             # When watching live, replay each fixed file into the Live panel. The fix call

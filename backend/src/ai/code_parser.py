@@ -68,6 +68,33 @@ def extract_jump_directives(text: str) -> tuple[list[dict], str]:
     return refs, cleaned.strip()
 
 
+_FILE_HEADER_RE = re.compile(
+    r'```\w*\s*\n(?://|#)\s*FILE:\s*(\S+)',  # an opening fence + FILE header
+)
+
+
+def find_unterminated_file(content: str) -> str | None:
+    """Path of a trailing ``// FILE:`` block that never closed its fence —
+    the signature of a response truncated mid-file (output-length cutoff,
+    dropped stream). Such a block is invisible to :func:`parse_llm_response`
+    (it requires the closing fence), so callers use this to turn a silent
+    drop into a loud, named warning. Returns None when every block closed."""
+    if "FILE:" not in (content or ""):
+        return None
+    file_block_pattern = re.compile(
+        r'```(\w*)\s*\n'
+        r'(?://|#)\s*FILE:\s*(\S+)\s*\n'
+        r'(.*?)'
+        r'\n```',
+        re.DOTALL,
+    )
+    last_end = 0
+    for m in file_block_pattern.finditer(content):
+        last_end = m.end()
+    dangling = _FILE_HEADER_RE.search(content, last_end)
+    return dangling.group(1).strip() if dangling else None
+
+
 def parse_llm_response(content: str) -> tuple[list[GeneratedFile], str, dict | None]:
     """Parse LLM response to extract generated files, description, and optional wizard schema.
 

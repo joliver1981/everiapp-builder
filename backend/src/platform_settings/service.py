@@ -18,16 +18,20 @@ DEFAULTS: dict[str, Any] = {
     "per_user_budget_usd": 0.0,       # 0 = unlimited
     "budget_alert_threshold": 0.8,    # warn at 80%
     # Per-purpose LLM output caps (max_tokens), admin-tunable in Platform →
-    # Settings. A CAP is never a target — a short answer costs the same — so a
-    # generous default is free; only work that would overflow benefits from
-    # raising it. Read via get_output_cap() (coerces + clamps). The decision cap
-    # is special: it also has a per-decision override (NULL row = inherit this).
-    "decision_max_output_tokens": 16384,        # aiDecide decisions
-    "generation_max_output_tokens": 16384,      # app generation (code per turn)
-    "self_heal_max_output_tokens": 8192,        # verify → fix passes
-    "assistant_max_output_tokens": 8192,        # in-app AI assistant (AI Toggle)
-    "bug_analysis_max_output_tokens": 8192,     # bug analyzer / copilot diagnosis
-    "marketplace_suggest_max_output_tokens": 2048,  # listing-metadata drafts
+    # Settings. 0 = NO platform cap: the call resolves to the MODEL's maximum
+    # output (llm_compat.resolve_max_tokens), which is the default everywhere —
+    # a cap is never a target, so a short answer costs the same, and a platform
+    # cap smaller than the work silently truncates it (the v0.17.x
+    # 16384-generation cap dropped whole files at client sites). Set a positive
+    # value ONLY as a deliberate cost ceiling; it is still clamped down to the
+    # model's max so it can never cause a provider 400. The decision cap is
+    # special: it also has a per-decision override (NULL row = inherit this).
+    "decision_max_output_tokens": 0,            # aiDecide decisions
+    "generation_max_output_tokens": 0,          # app generation (code per turn)
+    "self_heal_max_output_tokens": 0,           # verify → fix passes
+    "assistant_max_output_tokens": 0,           # in-app AI assistant (AI Toggle)
+    "bug_analysis_max_output_tokens": 0,        # bug analyzer / copilot diagnosis
+    "marketplace_suggest_max_output_tokens": 0,  # listing-metadata drafts
     # Optional cap on aiDecide INPUT size (chars of the canonical input JSON).
     # 0 = unlimited (the default): the model's context window is the real limit,
     # so there's no reason to cap by default. An operator can set a value purely
@@ -139,24 +143,30 @@ async def get_all(db: AsyncSession) -> dict[str, Any]:
     return out
 
 
-# Bounds for the admin-tunable per-purpose LLM output caps. Generous ceiling
-# (a cap is never a target); the floor stops a fat-fingered 0 from silently
-# disabling output.
+# Bounds for EXPLICIT admin-set per-purpose LLM output caps. 0 is a sentinel
+# ("no platform cap — use the model's maximum"), so the floor only applies to
+# positive values: it stops a fat-fingered tiny cap from silently strangling
+# output. The ceiling is a garbage-catcher, not a policy — the real limit is
+# always the model's own max, enforced at call time in llm_compat.
 OUTPUT_CAP_FLOOR = 256
-OUTPUT_CAP_CEIL = 64000
+OUTPUT_CAP_CEIL = 512000
 
 
 async def get_output_cap(db: AsyncSession, key: str) -> int:
-    """Read a `*_max_output_tokens` setting as an int, clamped to a safe range.
+    """Read a `*_max_output_tokens` setting as an int.
 
-    Falls back to the coded default when unset/garbage, so a call site never has
-    to handle a missing or malformed value.
+    Returns 0 to mean "no platform cap" — llm_compat resolves that to the
+    model's maximum output at call time. Positive (explicit cost-cap) values
+    are clamped to a sane range. Falls back to the coded default when
+    unset/garbage, so a call site never has to handle a missing value.
     """
     raw = await get_setting(db, key)
     try:
         val = int(raw)
     except (TypeError, ValueError):
-        val = int(DEFAULTS.get(key) or OUTPUT_CAP_CEIL)
+        val = int(DEFAULTS.get(key) or 0)
+    if val <= 0:
+        return 0
     return min(max(OUTPUT_CAP_FLOOR, val), OUTPUT_CAP_CEIL)
 
 

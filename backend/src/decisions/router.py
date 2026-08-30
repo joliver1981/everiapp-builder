@@ -30,7 +30,7 @@ class DecisionUpdate(BaseModel):
     cache_ttl_seconds: int | None = Field(None, ge=0, le=30 * 86400)
     timeout_seconds: int | None = Field(None, ge=1, le=120)
     # Bounds mirror service._MAX_TOKENS_MIN/_MAX (a cap, not a target).
-    max_output_tokens: int | None = Field(None, ge=16, le=64000)
+    max_output_tokens: int | None = Field(None, ge=16, le=512000)
 
 
 def _to_response(d) -> dict:

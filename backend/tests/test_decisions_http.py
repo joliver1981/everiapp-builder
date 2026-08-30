@@ -341,9 +341,9 @@ def test_fenced_json_answer_accepted(client, admin, provider, monkeypatch):
 
 
 def test_truncated_output_error_is_self_documenting(client, admin, provider, monkeypatch):
-    """The real-world failure: output cut off at max_tokens mid-JSON. The
-    span must say 'truncated', name the knob (max_output_tokens) AND how to
-    raise it — not just 'unparseable' or 'reduce your prompt'."""
+    """The real-world failure: output cut off at an output limit mid-JSON. With
+    no platform cap (the default), the span must say the MODEL's own maximum was
+    hit — not send the operator hunting a knob that isn't set."""
     import src.llm_compat as llm_compat
 
     async def truncated(kwargs):
@@ -356,21 +356,42 @@ def test_truncated_output_error_is_self_documenting(client, admin, provider, mon
     assert r.json()["source"] == "fallback"
     span = _wait_span_kind(app_id, "ai.decision")
     assert "truncated" in span["error"]
+    assert "MODEL's maximum" in span["error"]            # no knob to blame
+    assert "educe the requested volume" in span["error"]
+
+
+def test_truncated_output_with_explicit_cap_names_the_knob(client, admin, provider, monkeypatch):
+    """When an operator DID set a cost cap and it truncates a decision, the
+    error must say 'truncated', name the knob (max_output_tokens) AND how to
+    raise/clear it — not just 'unparseable'."""
+    import src.llm_compat as llm_compat
+
+    async def truncated(kwargs):
+        return _FakeResponse('```json\n{"system_prompts": ["You are', finish_reason="length")
+    monkeypatch.setattr(llm_compat, "_acompletion_raw", truncated)
+
+    manifest = [dict(MANIFEST[0], max_output_tokens=512)]
+    app_id = _decision_app(client, admin, "Capped Truncated App", manifest=manifest)
+    r = client.post(f"/api/decisions/{app_id}/classify_question/invoke",
+                    json={"input": {}}, headers=admin)
+    assert r.json()["source"] == "fallback"
+    span = _wait_span_kind(app_id, "ai.decision")
+    assert "truncated at 512 tokens" in span["error"]
     assert "max_output_tokens" in span["error"]          # the knob, by name
     assert "reduce the requested volume" in span["error"]
 
 
 def test_default_output_ceiling_inherits_platform_default(client, admin, provider, fake_llm):
     """A decision declared without max_output_tokens stores NULL (inherit) and
-    uses the generous platform default (16384) at call time — not the old
-    brittle 4096."""
+    uses the platform default at call time — now 0, the no-platform-cap
+    sentinel llm_compat resolves to the MODEL's maximum output."""
     app_id = _decision_app(client, admin, "Default Ceiling App")
     d = client.get(f"/api/decisions/{app_id}", headers=admin).json()[0]
     assert d["max_output_tokens"] is None            # inherits, not pinned
 
     client.post(f"/api/decisions/{app_id}/classify_question/invoke",
                 json={"input": {}}, headers=admin)
-    assert fake_llm[-1]["max_tokens"] == 16384       # the platform default
+    assert fake_llm[-1]["max_tokens"] == 0           # sentinel: model max
 
 
 def test_admin_platform_default_is_editable_and_applies(client, admin, provider, fake_llm):
@@ -387,7 +408,7 @@ def test_admin_platform_default_is_editable_and_applies(client, admin, provider,
                     json={"input": {}}, headers=admin)
         assert fake_llm[-1]["max_tokens"] == 40000   # inherited the raised default
     finally:
-        client.put("/api/admin/settings", json={"decision_max_output_tokens": 16384}, headers=admin)
+        client.put("/api/admin/settings", json={"decision_max_output_tokens": 0}, headers=admin)
 
 
 def test_per_decision_override_beats_platform_default(client, admin, provider, fake_llm):
@@ -400,7 +421,7 @@ def test_per_decision_override_beats_platform_default(client, admin, provider, f
                     json={"input": {}}, headers=admin)
         assert fake_llm[-1]["max_tokens"] == 8000    # the decision's own value, not 40000
     finally:
-        client.put("/api/admin/settings", json={"decision_max_output_tokens": 16384}, headers=admin)
+        client.put("/api/admin/settings", json={"decision_max_output_tokens": 0}, headers=admin)
 
 
 def test_manifest_can_raise_output_ceiling(client, admin, provider, fake_llm):
@@ -440,7 +461,7 @@ def test_manifest_output_ceiling_clamps_silently(client, admin, provider):
     app_id = _decision_app(client, admin, "Clamp Manifest App", manifest=manifest)
     d = client.get(f"/api/decisions/{app_id}", headers=admin).json()[0]
     assert d["name"] == "classify_question"        # manifest still registered
-    assert d["max_output_tokens"] == 64000         # clamped to the ceiling
+    assert d["max_output_tokens"] == 512000        # clamped to the ceiling
 
 
 def test_bare_enum_answer_accepted(client, admin, provider, monkeypatch):

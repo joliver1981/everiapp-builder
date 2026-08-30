@@ -435,11 +435,8 @@ def test_output_caps_settings_roundtrip(client, admin):
     for i, k in enumerate(_OUTPUT_CAP_KEYS):
         assert got[k] == 20000 + i, k
     # restore defaults so other modules in a shared-process run see pristine caps
-    client.put("/api/admin/settings", json={
-        "generation_max_output_tokens": 16384, "self_heal_max_output_tokens": 8192,
-        "assistant_max_output_tokens": 8192, "bug_analysis_max_output_tokens": 8192,
-        "decision_max_output_tokens": 16384, "marketplace_suggest_max_output_tokens": 2048,
-    }, headers=admin)
+    # (0 = no platform cap — the model's own maximum, the default everywhere)
+    client.put("/api/admin/settings", json={k: 0 for k in _OUTPUT_CAP_KEYS}, headers=admin)
 
 
 def test_assistant_output_cap_reaches_call_and_clamps(client, admin, providers, monkeypatch):
@@ -460,9 +457,15 @@ def test_assistant_output_cap_reaches_call_and_clamps(client, admin, providers, 
         client.post(f"/api/ai-toggle/{app_id}/chat", json={"message": "hi"}, headers=admin)
         assert seen[-1]["max_tokens"] == 12345
 
-        # Above the ceiling clamps to 64000 rather than reaching the provider raw.
+        # Above the garbage-catcher ceiling clamps rather than reaching the provider raw.
         client.put("/api/admin/settings", json={"assistant_max_output_tokens": 999999}, headers=admin)
         client.post(f"/api/ai-toggle/{app_id}/chat", json={"message": "hi again"}, headers=admin)
-        assert seen[-1]["max_tokens"] == 64000
+        assert seen[-1]["max_tokens"] == 512000
+
+        # 0 (the default) = no platform cap: passes through as the sentinel for
+        # llm_compat to resolve to the MODEL's maximum output at call time.
+        client.put("/api/admin/settings", json={"assistant_max_output_tokens": 0}, headers=admin)
+        client.post(f"/api/ai-toggle/{app_id}/chat", json={"message": "once more"}, headers=admin)
+        assert seen[-1]["max_tokens"] == 0
     finally:
-        client.put("/api/admin/settings", json={"assistant_max_output_tokens": 8192}, headers=admin)
+        client.put("/api/admin/settings", json={"assistant_max_output_tokens": 0}, headers=admin)

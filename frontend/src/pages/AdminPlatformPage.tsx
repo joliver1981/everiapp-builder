@@ -770,34 +770,36 @@ function SettingsTab() {
 
       <Section title="AI output limits (max tokens)">
         <p className="text-xs text-muted-foreground">
-          Per-purpose ceilings on how much the model may write in one call. Each is a cap,
-          not a target — raising one is free for short answers and only helps work that would
-          otherwise truncate mid-output. Range 256–64000.
+          Per-purpose ceilings on how much the model may write in one call.
+          <strong> 0 = no platform cap (the default): each call uses the model's own maximum
+          output.</strong> A cap is never a target — short answers cost the same either way —
+          so set a positive value only as a deliberate cost ceiling (256–512000). A cap smaller
+          than the work makes output truncate, which surfaces as build failures.
         </p>
         <div className="grid grid-cols-2 gap-3">
-          <Labeled label="App generation" hint="code written per builder turn">
-            <input type="number" min="256" max="64000" value={settings.generation_max_output_tokens ?? 16384}
+          <Labeled label="App generation" hint="code written per builder turn · 0 = model max">
+            <input type="number" min="0" max="512000" value={settings.generation_max_output_tokens ?? 0}
                    onChange={(e) => set({ generation_max_output_tokens: e.target.value })} className={inputCls} />
           </Labeled>
-          <Labeled label="Self-heal fixes" hint="each verify → fix pass">
-            <input type="number" min="256" max="64000" value={settings.self_heal_max_output_tokens ?? 8192}
+          <Labeled label="Self-heal fixes" hint="each verify → fix pass · 0 = model max">
+            <input type="number" min="0" max="512000" value={settings.self_heal_max_output_tokens ?? 0}
                    onChange={(e) => set({ self_heal_max_output_tokens: e.target.value })} className={inputCls} />
           </Labeled>
-          <Labeled label="In-app AI assistant" hint="the AI Toggle assistant's replies to end users">
-            <input type="number" min="256" max="64000" value={settings.assistant_max_output_tokens ?? 8192}
+          <Labeled label="In-app AI assistant" hint="the AI Toggle assistant's replies to end users · 0 = model max">
+            <input type="number" min="0" max="512000" value={settings.assistant_max_output_tokens ?? 0}
                    onChange={(e) => set({ assistant_max_output_tokens: e.target.value })} className={inputCls} />
           </Labeled>
-          <Labeled label="Bug analysis" hint="bug-report diagnosis + copilot">
-            <input type="number" min="256" max="64000" value={settings.bug_analysis_max_output_tokens ?? 8192}
+          <Labeled label="Bug analysis" hint="bug-report diagnosis + copilot · 0 = model max">
+            <input type="number" min="0" max="512000" value={settings.bug_analysis_max_output_tokens ?? 0}
                    onChange={(e) => set({ bug_analysis_max_output_tokens: e.target.value })} className={inputCls} />
           </Labeled>
           <Labeled label="AI decisions (aiDecide)"
-                   hint="default for decisions that don't set their own; a decision can override in decisions.json">
-            <input type="number" min="256" max="64000" value={settings.decision_max_output_tokens ?? 16384}
+                   hint="default for decisions that don't set their own; a decision can override in decisions.json · 0 = model max">
+            <input type="number" min="0" max="512000" value={settings.decision_max_output_tokens ?? 0}
                    onChange={(e) => set({ decision_max_output_tokens: e.target.value })} className={inputCls} />
           </Labeled>
-          <Labeled label="Marketplace metadata" hint="drafting listing title/description">
-            <input type="number" min="256" max="64000" value={settings.marketplace_suggest_max_output_tokens ?? 2048}
+          <Labeled label="Marketplace metadata" hint="drafting listing title/description · 0 = model max">
+            <input type="number" min="0" max="512000" value={settings.marketplace_suggest_max_output_tokens ?? 0}
                    onChange={(e) => set({ marketplace_suggest_max_output_tokens: e.target.value })} className={inputCls} />
           </Labeled>
         </div>

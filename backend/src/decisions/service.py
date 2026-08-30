@@ -33,10 +33,12 @@ _TIMEOUT_MAX = 120
 # generative decisions (multiple prompts/arrays, e.g. side-by-side model
 # comparisons) mid-JSON and burned their fallback on an "unparseable" answer.
 # Overridable per decision (manifest/PUT), clamped to _MAX_TOKENS_MAX. Loose by
-# default; an app that wants to bound cost dials it DOWN.
-DEFAULT_DECISION_MAX_TOKENS = 16384
+# default; an app that wants to bound cost dials it DOWN. 0 = no platform cap:
+# llm_compat resolves it to the MODEL's maximum output at call time (owner
+# directive — self-imposed caps must never truncate or fail work).
+DEFAULT_DECISION_MAX_TOKENS = 0
 _MAX_TOKENS_MIN = 16
-_MAX_TOKENS_MAX = 64000
+_MAX_TOKENS_MAX = 512000
 _NAME_MAX = 100
 
 _TYPE_MAP = {
@@ -310,16 +312,21 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
     ]
 
     # Effective output ceiling: an explicit per-decision override wins; otherwise
-    # inherit the admin-tunable platform default (Platform → Settings); the code
-    # constant is the last-resort floor. Clamped defensively either way.
+    # inherit the admin-tunable platform default (Platform → Settings). 0 (the
+    # default) = no platform cap — llm_compat resolves it to the model's own
+    # maximum output, so a cap can never truncate a decision unless someone
+    # deliberately set one. Positive values are clamped defensively.
     from ..platform_settings.service import get_setting
     platform_default = await get_setting(db, "decision_max_output_tokens")
-    effective_max_tokens = (
-        decision.max_output_tokens
-        or (int(platform_default) if platform_default else 0)
-        or DEFAULT_DECISION_MAX_TOKENS
-    )
-    effective_max_tokens = min(max(_MAX_TOKENS_MIN, effective_max_tokens), _MAX_TOKENS_MAX)
+    try:
+        _platform_cap = int(platform_default or 0)
+    except (TypeError, ValueError):
+        _platform_cap = 0
+    effective_max_tokens = decision.max_output_tokens or _platform_cap or DEFAULT_DECISION_MAX_TOKENS
+    if effective_max_tokens > 0:
+        effective_max_tokens = min(max(_MAX_TOKENS_MIN, effective_max_tokens), _MAX_TOKENS_MAX)
+    else:
+        effective_max_tokens = 0  # sentinel: model max, resolved in llm_compat
 
     # 3. The call — bounded, instrumented (the gateway emits the child ai.call
     #    span parented to this decision's span), metered.
@@ -362,13 +369,20 @@ async def invoke(db: AsyncSession, decision: AppDecision, input_obj: dict,
         # model-quality problem — say which and what to change.
         finish = getattr(response.choices[0], "finish_reason", None)
         if finish == "length":
+            if effective_max_tokens > 0:
+                return _result(fallback, "fallback", status="error",
+                               error=f"model output truncated at {effective_max_tokens} tokens "
+                                     f"mid-JSON — a cost cap is set below what this decision "
+                                     f"needs. Raise/clear this decision's max_output_tokens "
+                                     f"(decisions.json or PUT /api/decisions/{decision.app_id}/"
+                                     f"{decision.name}) or the platform default in Platform → "
+                                     f"Settings → AI decisions (0 = model maximum); "
+                                     f"or reduce the requested volume in its prompt")
             return _result(fallback, "fallback", status="error",
-                           error=f"model output truncated at {effective_max_tokens} tokens "
-                                 f"mid-JSON — raise this decision's max_output_tokens "
-                                 f"(decisions.json or PUT /api/decisions/{decision.app_id}/"
-                                 f"{decision.name}), or raise the platform default in "
-                                 f"Platform → Settings → AI decisions (max {_MAX_TOKENS_MAX}); "
-                                 f"or reduce the requested volume in its prompt")
+                           error="model output truncated at the MODEL's maximum output "
+                                 "length mid-JSON — no platform cap was in play. Reduce the "
+                                 "requested volume in this decision's prompt, or use a model "
+                                 "with a larger output window")
         return _result(fallback, "fallback", status="error",
                        error=f"unparseable model output: {raw[:200]!r}")
     if not _validate_output(value, decision.output_schema_json):

@@ -50,6 +50,65 @@ def _names_rejected_param(message: str, param: str) -> bool:
     return param in m and any(hint in m for hint in _REJECTION_HINTS)
 
 
+# --- max_tokens resolution: "the provider's limit is the only limit" ---------
+# Platform policy (owner directive 2026-08-30): output caps must never be the
+# reason a call fails or truncates. max_tokens=0/None means "no platform cap" —
+# resolve to the MODEL's maximum output. A positive value (explicit admin cost
+# cap) is still clamped down to the model's max so it can never 400.
+
+# Used when litellm's registry doesn't know the model (brand-new or free-form
+# ids). Deliberately generous — a cap is never a target — and the too-large
+# retry below recovers the exact limit if the provider objects.
+FALLBACK_MAX_OUTPUT_TOKENS = 64000
+
+_MAX_TOKENS_ERROR_HINTS = (
+    "max_tokens", "max tokens", "max_completion_tokens", "output tokens",
+)
+
+
+def model_max_output_tokens(model: str | None) -> int | None:
+    """Best-effort lookup of a model's maximum output tokens via litellm's
+    registry. None when the model is unknown (never raises)."""
+    if not model:
+        return None
+    try:
+        import litellm
+        info = litellm.get_model_info(model)
+        val = (info or {}).get("max_output_tokens") or (info or {}).get("max_tokens")
+        return int(val) if val else None
+    except Exception:
+        return None
+
+
+def resolve_max_tokens(requested: int | None, model: str | None) -> int:
+    """Effective max_tokens for a call: 0/None = the model's own maximum
+    (fallback when unknown); a positive request is clamped to the model's max."""
+    limit = model_max_output_tokens(model)
+    if not requested or requested <= 0:
+        return limit or FALLBACK_MAX_OUTPUT_TOKENS
+    if limit and requested > limit:
+        return limit
+    return int(requested)
+
+
+def _max_tokens_limit_from_error(message: str, requested: int) -> int | None:
+    """If `message` is a provider rejecting max_tokens as too large, extract the
+    limit it states (e.g. Anthropic: "max_tokens: 128000 > 64000, which is the
+    maximum..."; OpenAI: "This model supports at most 16384 completion tokens").
+    Returns a safe retry value, or None when this isn't that error."""
+    low = message.lower()
+    if not any(h in low for h in _MAX_TOKENS_ERROR_HINTS):
+        return None
+    import re
+    candidates = [int(n) for n in re.findall(r"\d{2,}", message)]
+    stated = [n for n in candidates if 16 <= n < requested]
+    if stated:
+        return max(stated)
+    # Provider named max_tokens but no parseable limit — only worth one blind
+    # retry if the request was actually large.
+    return 16384 if requested > 16384 else None
+
+
 def litellm_model(provider_type: str | None, model: str | None) -> str:
     """Compose the litellm model string from a provider's (type, model) pair.
 
@@ -133,12 +192,32 @@ async def _acompletion_raw(kwargs: dict):
         settings.llm_stream_timeout if kwargs.get("stream") else settings.llm_request_timeout,
     )
 
+    # No platform cap may cause a failure or silent truncation: 0/None/absent
+    # max_tokens becomes the model's maximum output; explicit values are clamped
+    # to the model's max when litellm knows it. (Owner directive — see
+    # resolve_max_tokens.)
+    kwargs["max_tokens"] = resolve_max_tokens(kwargs.get("max_tokens"), kwargs.get("model"))
+
     attempts = 0
+    max_tokens_retried = False
     while True:
         try:
             return await litellm.acompletion(**kwargs)
         except Exception as e:  # noqa: BLE001 - we re-raise anything we can't handle
             message = str(e)
+            # A model unknown to litellm's registry can still reject our
+            # resolved max_tokens as too large — retry ONCE at the limit the
+            # provider itself states, so maxing out never fails a turn.
+            if not max_tokens_retried:
+                stated = _max_tokens_limit_from_error(message, int(kwargs.get("max_tokens") or 0))
+                if stated:
+                    max_tokens_retried = True
+                    logger.warning(
+                        "Model %s rejected max_tokens=%s; retrying at provider-stated limit %d.",
+                        kwargs.get("model"), kwargs.get("max_tokens"), stated,
+                    )
+                    kwargs["max_tokens"] = stated
+                    continue
             dropped = None
             for param in _DROPPABLE_PARAMS:
                 if param in kwargs and _names_rejected_param(message, param):

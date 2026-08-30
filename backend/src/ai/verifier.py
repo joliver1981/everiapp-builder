@@ -7,7 +7,7 @@ Layer details + what each catches:
 
   1. tsc --noEmit    (~3-10s)   Type errors, missing imports, bad refs.
   2. vite build      (~10-30s)  Build-time issues: CSS, assets, plugin failures, dynamic-import resolution.
-  3. boot probe      (~5-15s)   Spawns `npx serve` against dist/, GETs `/`, fetches the main JS bundle.
+  3. boot probe      (~5-15s)   Serves dist/ from an in-process static server, GETs `/`, fetches the main JS bundle.
                                 Catches "build succeeded but bundle 404s" / "blank page because the wrong file got published".
   4. runtime probe   (~10-20s)  Launches headless Chromium (Playwright) against the served app.
                                 Listens for: console.error, window.onerror, unhandledrejection, page crashes.
@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -42,7 +41,7 @@ from .probe_shared import (
 
 logger = logging.getLogger(__name__)
 
-# Hard wall-clock cap for the out-of-process runtime probe (npx serve + browser).
+# Hard wall-clock cap for the out-of-process runtime probe (static server + browser).
 _RUNTIME_PROBE_TIMEOUT_S = 60
 
 
@@ -50,6 +49,68 @@ from .. import node_env
 
 NPM_CMD = node_env.npm_cmd()
 NPX_CMD = node_env.npx_cmd()
+
+
+# --- In-process static server for the boot/runtime probes --------------------
+# This used to be `npx --yes serve`, which DOWNLOADS the `serve` package from
+# registry.npmjs.org on first use — so on an offline/firewalled install (a
+# normal client posture) every boot/runtime probe failed with npm ENOTFOUND
+# and the build was reported broken even though tsc + vite were green. A
+# stdlib thread server needs no network, no subprocess, no npm cache, and
+# works in frozen builds too.
+import threading
+from functools import partial as _partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+
+class _QuietSpaHandler(SimpleHTTPRequestHandler):
+    """Serves a built SPA dist/: files as-is, extension-less routes fall back
+    to index.html (client-side routing), zero request logging."""
+
+    # Pin the types Chromium is strict about (module scripts REQUIRE a JS
+    # MIME). extensions_map wins over the mimetypes registry, so a broken
+    # Windows per-machine registry mapping can't break the probe.
+    extensions_map = {
+        ".html": "text/html",
+        ".js": "text/javascript",
+        ".mjs": "text/javascript",
+        ".css": "text/css",
+        ".svg": "image/svg+xml",
+        ".json": "application/json",
+        ".wasm": "application/wasm",
+    }
+
+    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        pass
+
+    def send_head(self):
+        clean = self.path.split("?", 1)[0].split("#", 1)[0]
+        fs_path = self.translate_path(clean)
+        if not os.path.exists(fs_path) and "." not in os.path.basename(clean):
+            self.path = "/index.html"
+        return super().send_head()
+
+
+def _start_static_server(dist: Path) -> tuple[ThreadingHTTPServer, threading.Thread, int]:
+    """Serve `dist` on an OS-assigned localhost port (no free-port race).
+    Returns (server, thread, port); stop with _stop_static_server."""
+    handler = _partial(_QuietSpaHandler, directory=str(dist))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    httpd.daemon_threads = True
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True,
+                              name="verify-static-server")
+    thread.start()
+    return httpd, thread, port
+
+
+def _stop_static_server(httpd: ThreadingHTTPServer, thread: threading.Thread) -> None:
+    try:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    except Exception:
+        logger.exception("static probe server teardown failed (ignored)")
 
 
 @dataclass
@@ -119,14 +180,6 @@ async def _run(
 
     rc, out, err = await asyncio.get_event_loop().run_in_executor(None, _go)
     return rc, out, err, time.monotonic() - t0
-
-
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
 
 
 # ---------- Stage 0: npm install if needed ----------
@@ -384,79 +437,41 @@ async def run_boot_probe(app_id: str) -> VerifyResult:
             summary="no index.html",
         )
 
-    port = _free_port()
-    # `npx --yes serve` works on most setups. We use it not `vite preview` because
-    # `serve` is faster to spin up and doesn't load the vite plugin chain.
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-    proc = subprocess.Popen(
-        [NPX_CMD, "--yes", "serve", "-s", "dist", "-l", str(port), "--no-clipboard"],
-        cwd=str(app_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        creationflags=creation_flags,
-    )
     errors: list[VerifyError] = []
+    try:
+        httpd, server_thread, port = _start_static_server(dist)
+    except OSError as e:
+        return VerifyResult(
+            stage_reached="boot",
+            duration_seconds=time.monotonic() - t0,
+            errors=[VerifyError(
+                stage="boot", file=None, line=None, column=None, code=None,
+                message=f"static probe server could not bind on localhost: {e}",
+            )],
+            summary="server bind failed",
+        )
 
     try:
-        # Wait up to 12s for the server to bind.
-        ready = False
-        for _ in range(48):
-            ok, _ = await _probe_url(f"http://127.0.0.1:{port}/", timeout_s=1.0)
-            if ok:
-                ready = True
-                break
-            if proc.poll() is not None:
-                break
-            await asyncio.sleep(0.25)
-
-        if not ready:
-            stderr_blob = ""
-            try:
-                if proc.stdout:
-                    stderr_blob = proc.stdout.read(2000).decode(errors="replace")
-            except Exception:
-                pass
+        # 1. Index must load
+        ok, detail = await _probe_url(f"http://127.0.0.1:{port}/")
+        if not ok:
             errors.append(VerifyError(
-                stage="boot", file=None, line=None, column=None, code=None,
-                message=f"static server failed to bind on port {port} within 12s.\n{stderr_blob}",
+                stage="boot", file="index.html", line=None, column=None, code=None,
+                message=f"GET / returned {detail}",
             ))
         else:
-            # 1. Index must load
-            ok, detail = await _probe_url(f"http://127.0.0.1:{port}/")
-            if not ok:
-                errors.append(VerifyError(
-                    stage="boot", file="index.html", line=None, column=None, code=None,
-                    message=f"GET / returned {detail}",
-                ))
-            else:
-                # 2. Pull the main JS bundle out of index.html and confirm it loads.
-                html = index.read_text(encoding="utf-8", errors="replace")
-                bundle = _extract_main_bundle_url(html)
-                if bundle:
-                    ok, detail = await _probe_url(f"http://127.0.0.1:{port}{bundle}")
-                    if not ok:
-                        errors.append(VerifyError(
-                            stage="boot", file=None, line=None, column=None, code=None,
-                            message=f"Main JS bundle {bundle} returned {detail}",
-                        ))
+            # 2. Pull the main JS bundle out of index.html and confirm it loads.
+            html = index.read_text(encoding="utf-8", errors="replace")
+            bundle = _extract_main_bundle_url(html)
+            if bundle:
+                ok, detail = await _probe_url(f"http://127.0.0.1:{port}{bundle}")
+                if not ok:
+                    errors.append(VerifyError(
+                        stage="boot", file=None, line=None, column=None, code=None,
+                        message=f"Main JS bundle {bundle} returned {detail}",
+                    ))
     finally:
-        try:
-            import signal
-            if sys.platform == "win32":
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                proc.terminate()
-            for _ in range(20):
-                if proc.poll() is not None:
-                    break
-                await asyncio.sleep(0.1)
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-        except Exception:
-            pass
+        _stop_static_server(httpd, server_thread)
 
     if errors:
         return VerifyResult(
@@ -636,43 +651,22 @@ async def run_runtime_probe(app_id: str, run_a11y: bool = False) -> VerifyResult
     # The actual browser probe runs OUT OF PROCESS (runtime_probe_child.py).
     # A missing Playwright/Chromium comes back from the child as a non-fatal
     # probe_crash (verify passes on tsc/build/boot), not a hard failure.
-    port = _free_port()
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-    server_proc = subprocess.Popen(
-        [NPX_CMD, "--yes", "serve", "-s", "dist", "-l", str(port), "--no-clipboard"],
-        cwd=str(app_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        creationflags=creation_flags,
-    )
+    try:
+        httpd, server_thread, port = _start_static_server(dist)
+    except OSError as e:
+        return VerifyResult(
+            stage_reached="runtime",
+            duration_seconds=time.monotonic() - t0,
+            errors=[VerifyError(
+                stage="runtime", file=None, line=None, column=None, code=None,
+                message=f"static probe server could not bind on localhost: {e}",
+            )],
+            summary="server bind failed",
+        )
 
     errors: list[VerifyError] = []
     probe_crash: str | None = None  # infra crash (Playwright/serve/timeout), NOT an app error
     try:
-        # Wait for the static server to bind.
-        ready = False
-        for _ in range(48):
-            ok, _ = await _probe_url(f"http://127.0.0.1:{port}/", timeout_s=1.0)
-            if ok:
-                ready = True
-                break
-            if server_proc.poll() is not None:
-                break
-            await asyncio.sleep(0.25)
-
-        if not ready:
-            return VerifyResult(
-                stage_reached="runtime",
-                duration_seconds=time.monotonic() - t0,
-                errors=[VerifyError(
-                    stage="runtime", file=None, line=None, column=None, code=None,
-                    message=f"static server failed to bind on port {port}",
-                )],
-                summary="server bind failed",
-            )
-
         # Drive the browser in a SEPARATE PROCESS. uvicorn's Windows
         # SelectorEventLoop can't spawn Chromium (a bare NotImplementedError); a
         # fresh interpreter under asyncio.run gets a Proactor loop where it can.
@@ -713,21 +707,7 @@ async def run_runtime_probe(app_id: str, run_a11y: bool = False) -> VerifyResult
         detail = str(e).strip()
         probe_crash = f"{type(e).__name__}: {detail}" if detail else type(e).__name__
     finally:
-        try:
-            import signal
-            if sys.platform == "win32":
-                server_proc.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                server_proc.terminate()
-            for _ in range(20):
-                if server_proc.poll() is not None:
-                    break
-                await asyncio.sleep(0.1)
-            if server_proc.poll() is None:
-                server_proc.kill()
-                server_proc.wait()
-        except Exception:
-            pass
+        _stop_static_server(httpd, server_thread)
 
     return _build_runtime_result(errors, probe_crash, time.monotonic() - t0, app_id)
 
