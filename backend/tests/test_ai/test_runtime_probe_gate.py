@@ -5,6 +5,8 @@ runtime stage runs at all. Default off in production via the
 `runtime_probe_enabled` platform setting; these tests pin the gate behavior
 without spawning a real browser.
 """
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -92,6 +94,43 @@ def test_probe_child_and_shared_module_present():
     src = child.read_text(encoding="utf-8")
     assert "import probe_shared" in src
     assert "async_playwright" in src
+
+
+# ---------- Frozen (PyInstaller) builds must not spawn the probe child ----------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_a11y", [False, True])
+async def test_frozen_build_skips_probe_without_spawning(monkeypatch, run_a11y):
+    """THE regression lock for packaged installs: there sys.executable is
+    aihub.exe, so spawning it with runtime_probe_child.py args would boot a
+    SECOND full server against the production DB (the exe ignores the args)
+    and die on the port bind. Frozen builds must return the non-fatal
+    probe-skip result BEFORE touching any subprocess — same pattern as
+    marketplace/external.py screenshot capture."""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    def _no_spawn(*a, **k):
+        raise AssertionError("frozen build must not spawn any subprocess")
+    monkeypatch.setattr(subprocess, "Popen", _no_spawn)
+    monkeypatch.setattr(subprocess, "run", _no_spawn)
+
+    r = await verifier.run_runtime_probe("frozen-app", run_a11y=run_a11y)
+    assert r.passed is True, "probe skip must be non-fatal (pass on tsc/build/boot)"
+    assert r.stage_reached == "runtime"
+    assert "packaged build" in r.summary
+
+
+@pytest.mark.asyncio
+async def test_unfrozen_probe_still_reaches_the_spawn_path(monkeypatch, tmp_path):
+    """Counterpart guard: without sys.frozen the probe must still try to run
+    (here it fails fast on the missing dist/, proving the skip is frozen-only)."""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setattr(verifier, "_app_draft_dir", lambda app_id: tmp_path / "nope")
+
+    r = await verifier.run_runtime_probe("dev-app")
+    assert r.passed is False
+    assert "dist/ does not exist" in r.errors[0].message
 
 
 # ---------- The new out-of-process plumbing (pure functions) ----------

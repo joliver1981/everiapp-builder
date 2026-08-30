@@ -601,9 +601,26 @@ async def run_runtime_probe(app_id: str, run_a11y: bool = False) -> VerifyResult
       - Anything thrown asynchronously inside a useEffect / promise
       - Pages that load but never render (#root stays empty)
     """
+    t0 = time.monotonic()
+
+    # Frozen (PyInstaller) builds have no python interpreter to spawn the probe
+    # child with — sys.executable is aihub.exe, and launching it with
+    # runtime_probe_child.py args would IGNORE them and boot a second full
+    # server against the production DB (port-bind fight, transient second DB
+    # writer) before dying. Same constraint as marketplace/external.py
+    # screenshot capture. Non-fatal, exactly like a missing-Playwright crash:
+    # the app passes on tsc/build/boot.
+    if getattr(sys, "frozen", False):
+        return _build_runtime_result(
+            [],
+            "runtime probe unavailable in the packaged build "
+            "(no python interpreter to spawn the probe child)",
+            time.monotonic() - t0,
+            app_id,
+        )
+
     app_dir = _app_draft_dir(app_id)
     dist = app_dir / "dist"
-    t0 = time.monotonic()
 
     if not dist.exists():
         return VerifyResult(
