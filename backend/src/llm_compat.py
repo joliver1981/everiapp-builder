@@ -123,6 +123,16 @@ async def _acompletion_raw(kwargs: dict):
     # Let litellm proactively drop params known-unsupported for the chosen model.
     litellm.drop_params = True
 
+    # Never let a provider call wait forever (callers may override). For
+    # streaming, the HTTP client applies this per read — an inter-chunk gap
+    # cap, generous enough for long time-to-first-token on huge prompts; for
+    # non-streaming it caps the whole request.
+    from .config import settings
+    kwargs.setdefault(
+        "timeout",
+        settings.llm_stream_timeout if kwargs.get("stream") else settings.llm_request_timeout,
+    )
+
     attempts = 0
     while True:
         try:

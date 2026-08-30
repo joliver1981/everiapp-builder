@@ -21,6 +21,12 @@ class App(Base):
     # Level: off | tsc | tsc_build | tsc_build_boot | tsc_build_boot_runtime
     ai_verify_level: Mapped[str] = mapped_column(String(30), default="tsc_build_boot_runtime")
     ai_verify_max_iterations: Mapped[int] = mapped_column(Integer, default=8)
+    # Last provider the builder chat actually used for this app, so reopening
+    # the builder keeps generating with the same model instead of silently
+    # reverting to the platform default. Plain id (no FK): providers live in
+    # the secrets store, and a deleted provider must not break the app row —
+    # the frontend falls back to the default when the id no longer resolves.
+    builder_provider_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     setup_wizard: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # wizard schema JSON
     installed_from: Mapped[str | None] = mapped_column(String(36), nullable=True)  # marketplace listing ID
     # Iframe embedding: allow this app to be framed by external portals.

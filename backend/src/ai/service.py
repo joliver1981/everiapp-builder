@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -19,6 +20,90 @@ from .verifier import VerifyResult, VerifyError, errors_to_prompt_block, verify_
 from ..llm_compat import acompletion, litellm_model
 from ..ai_prompts import registry as prompt_registry
 from . import debug_log
+
+
+# --- LLM stream watchdog + actionable network errors (unit-tested in test_stream_watchdog) ---
+
+# Substrings marking "the server can't reach the provider at all" (DNS,
+# firewall egress, proxy). Hit live: an installed server resolved
+# api.openai.com but not api.anthropic.com → the raw litellm error was
+# accurate but useless to the operator.
+_NETWORK_ERROR_HINTS = (
+    "getaddrinfo", "cannot connect to host", "connection refused",
+    "connecterror", "connection error", "connect timeout",
+    "name or service not known", "nodename nor servname",
+)
+
+
+def _actionable_llm_error(provider_type: str, model: str, error_text: str) -> str:
+    """Wrap provider-unreachable errors with what the operator should DO."""
+    low = error_text.lower()
+    if any(h in low for h in _NETWORK_ERROR_HINTS):
+        return (
+            f"The platform server could not reach the {provider_type or 'LLM'} API "
+            f"(model {model or 'unknown'}): {error_text[:400]}\n\n"
+            "This is a server-side network problem, not a model problem. Check that the "
+            "EveriApp server can resolve and reach the provider's API host (DNS / "
+            "firewall egress), or set HTTPS_PROXY in the service .env and restart. "
+            "Admin > AI Providers > Test reproduces this check."
+        )
+    return error_text
+
+
+async def _stream_with_watchdog(response, provider_label: str, *,
+                                silence_timeout: float, status_interval: float = 30.0):
+    """Relay LLM stream chunks, surfacing silence instead of hanging on it.
+
+    Yields ("chunk", c) for every stream chunk. When the stream has produced
+    nothing for status_interval seconds, yields ("status", text) so the chat
+    shows signs of life (long time-to-first-token on huge prompts looks
+    exactly like a hang); once uninterrupted silence reaches silence_timeout,
+    raises with an actionable message. The stream is consumed by a pump task
+    so the timed waits never cancel the underlying iterator mid-chunk.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _pump():
+        try:
+            async for c in response:
+                await queue.put(("chunk", c))
+            await queue.put(("end", None))
+        except Exception as e:  # noqa: BLE001 — relayed to the consumer below
+            await queue.put(("error", e))
+
+    pump = asyncio.create_task(_pump())
+    try:
+        silent = 0.0
+        slice_s = max(0.01, min(float(status_interval), float(silence_timeout)))
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=slice_s)
+            except asyncio.TimeoutError:
+                silent += slice_s
+                if silent >= float(silence_timeout):
+                    raise RuntimeError(
+                        f"No response data from {provider_label} for {int(silent)}s — "
+                        "aborting this turn. The provider may be unreachable from this "
+                        "server or overloaded; Admin > AI Providers > Test checks it."
+                    )
+                yield ("status", (
+                    f"\n\n_Still waiting on {provider_label} — {int(silent)}s without "
+                    "data; large prompts can take a while…_"
+                ))
+                continue
+            silent = 0.0
+            if kind == "chunk":
+                yield ("chunk", payload)
+            elif kind == "end":
+                return
+            else:
+                raise payload
+    finally:
+        pump.cancel()
+        try:
+            await pump
+        except BaseException:  # noqa: BLE001 — cancelled pump teardown only
+            pass
 
 
 # --- Self-heal early-stop heuristics (pure; unit-tested in test_generation_feedback) ---
@@ -314,6 +399,19 @@ class AIService:
             yield {"type": "error", "data": "No AI provider configured. Please add one in Admin > AI Providers."}
             return
 
+        # Remember the explicitly chosen provider on the app, so reopening the
+        # builder keeps generating with the same model instead of reverting to
+        # the platform default. Only after the provider RESOLVED (bogus ids
+        # never stick); best-effort — must never break the turn.
+        if provider_id:
+            try:
+                app_row = await db.get(App, app_id)
+                if app_row is not None and app_row.builder_provider_id != provider_id:
+                    app_row.builder_provider_id = provider_id
+                    await db.commit()
+            except Exception:
+                logger.exception("failed to persist builder provider for app %s", app_id)
+
         # --- Budget enforcement ------------------------------------------
         # Block if the user (or org) has blown the monthly LLM budget. Surface
         # a near-limit warning so the UI can show a banner.
@@ -378,7 +476,18 @@ class AIService:
             # feeds full_response — that stays the raw source of truth for parsing.
             st = _StreamState()
 
-            async for chunk in response:
+            _watched = _stream_with_watchdog(
+                response,
+                f"{provider_type}/{model}",
+                silence_timeout=float(settings.llm_stream_timeout),
+            )
+            async for _wkind, _witem in _watched:
+                if _wkind == "status":
+                    # Silence heartbeat — show life in the chat instead of an
+                    # indefinite "Thinking..." while the provider says nothing.
+                    yield {"type": "status", "data": _witem}
+                    continue
+                chunk = _witem
                 # Usage arrives on the final chunk when include_usage is set.
                 _u = getattr(chunk, "usage", None)
                 if _u is not None:
@@ -566,6 +675,15 @@ class AIService:
             msg = str(e)
             if "api_key" in msg.lower() or "authentication" in msg.lower():
                 msg = "AI provider authentication failed. Check your API key in Admin > AI Providers."
+            else:
+                # Provider-unreachable errors get the operator playbook appended
+                # (DNS/firewall/proxy) — the raw litellm text is accurate but
+                # useless on an installed server.
+                msg = _actionable_llm_error(
+                    provider_config.get("provider_type") or "",
+                    provider_config.get("model") or "",
+                    msg,
+                )
             yield {"type": "error", "data": msg}
 
     async def _build_messages(self, db: AsyncSession, conversation: Conversation, app_id: str, editor_context: dict | None = None, user_id: str | None = None) -> list[dict]:

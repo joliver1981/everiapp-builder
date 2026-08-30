@@ -41,6 +41,7 @@ def _app_to_response(app, creator=None) -> AppResponse:
         # (pre-validation imports) must degrade to "no wizard", not fail
         # AppResponse validation and 500 the entire app listing.
         setup_wizard=sanitized_wizard(app.setup_wizard),
+        builder_provider_id=app.builder_provider_id,
         setup_instructions=app.setup_instructions or "",
         last_published_version=app.last_published_version or "",
         marketplace_listing=app.marketplace_listing,

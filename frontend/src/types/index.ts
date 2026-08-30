@@ -29,6 +29,9 @@ export interface App {
   bug_fix_auto_approve_max_risk?: 'none' | 'low' | 'medium'
   ai_verify_level?: 'off' | 'tsc' | 'tsc_build' | 'tsc_build_boot' | 'tsc_build_boot_runtime' | 'tsc_build_boot_runtime_a11y'
   ai_verify_max_iterations?: number
+  // Last provider the builder chat used for this app (dropdown continuity);
+  // may reference a since-deleted provider — fall back to the default then.
+  builder_provider_id?: string | null
   setup_instructions?: string
   last_published_version?: string
   marketplace_listing?: {

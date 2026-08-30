@@ -68,6 +68,8 @@ _MISSING_COLUMN_MIGRATIONS = [
     ("apps", "last_published_version",        "VARCHAR(20) DEFAULT ''"),
     # Last-published marketplace listing metadata (JSON: short_desc/category/tags/license)
     ("apps", "marketplace_listing",           "TEXT"),
+    # Last provider the builder chat used for this app (dropdown continuity)
+    ("apps", "builder_provider_id",           "VARCHAR(36)"),
     # Trace spine: join llm_usage rows to ai_spans / a request's trace
     ("llm_usage", "trace_id",                 "VARCHAR(64)"),
     ("llm_usage", "span_id",                  "VARCHAR(36)"),

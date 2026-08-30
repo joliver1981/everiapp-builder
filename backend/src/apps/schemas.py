@@ -31,6 +31,9 @@ class AppResponse(BaseModel):
     ai_verify_level: str = "tsc_build_boot_runtime"
     ai_verify_max_iterations: int = 8
     setup_wizard: dict | None = None
+    # Last provider the builder chat used (dropdown continuity); may reference
+    # a since-deleted provider — clients must fall back to the default then.
+    builder_provider_id: str | None = None
     setup_instructions: str = ""
     last_published_version: str = ""
     marketplace_listing: dict | None = None

@@ -64,13 +64,23 @@ export function ChatPanel({ appId }: ChatPanelProps) {
       .catch(() => setTemplates([]))
   }, [])
 
-  // Load available providers
+  // Load available providers. Prefer the provider this app was last built
+  // with (persisted server-side when a message uses it) so reopening the
+  // builder continues with the same model; fall back to the platform default
+  // when the app never chose one or its provider was since deleted.
   useEffect(() => {
-    apiClient.get<AIProviderOption[]>('/ai/providers').then((data) => {
+    Promise.all([
+      apiClient.get<AIProviderOption[]>('/ai/providers'),
+      apiClient.get<{ builder_provider_id?: string | null }>(`/apps/${appId}`).catch(() => null),
+    ]).then(([data, app]) => {
       setProviders(data)
-      // Auto-select default
+      const remembered = app?.builder_provider_id
+        ? data.find((p) => p.id === app.builder_provider_id)
+        : undefined
       const defaultProvider = data.find((p) => p.is_default_generation)
-      if (defaultProvider) {
+      if (remembered) {
+        setSelectedProviderId(remembered.id)
+      } else if (defaultProvider) {
         setSelectedProviderId(defaultProvider.id)
       } else if (data.length > 0) {
         setSelectedProviderId(data[0].id)
@@ -78,7 +88,7 @@ export function ChatPanel({ appId }: ChatPanelProps) {
     }).catch(() => {
       // No providers configured
     })
-  }, [])
+  }, [appId])
 
   // Close provider menu when clicking outside
   useEffect(() => {
