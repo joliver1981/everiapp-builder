@@ -226,6 +226,15 @@ def test_non_dict_wizard_row_behaves_like_no_wizard(client, admin):
                        json={"values": {"x": "1"}}, headers=admin).status_code == 400
     assert client.get(f"/api/apps/{app_id}/wizard", headers=admin).json() == {}
 
+    # Response serialization must degrade too: this one row used to fail
+    # AppResponse validation and 500 the ENTIRE app listing for everyone.
+    r = client.get("/api/apps", headers=admin)
+    assert r.status_code == 200, r.text
+    mine = next(a for a in r.json() if a["id"] == app_id)
+    assert mine["setup_wizard"] is None
+    r = client.get(f"/api/apps/{app_id}", headers=admin)
+    assert r.status_code == 200 and r.json()["setup_wizard"] is None
+
 
 def test_sanitized_wizard_gate():
     """Lenient gate used by marketplace installs for pre-validation listings."""

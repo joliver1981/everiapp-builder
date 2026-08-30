@@ -7,6 +7,7 @@ from sqlalchemy import select, and_, delete
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import App, AppSetting, AppPermission
+from ..app_template import SCAFFOLD_IGNORE, template_root
 from ..auth.models import User
 from ..config import settings
 from ..secrets.encryption import encryption_service
@@ -78,8 +79,13 @@ def sanitized_wizard(wizard) -> dict | None:
     return wizard
 
 
-def _template_root() -> Path:
-    return Path(__file__).parent.parent.parent.parent / "app-template"
+class TemplateMissingError(RuntimeError):
+    """app-template could not be located — the installation is incomplete.
+
+    Raised instead of scaffolding a husk: an app without package.json/vite
+    config "creates" fine and then dies at its first verify with a baffling
+    `npm error enoent`, which is exactly what the mis-resolved template path
+    produced in packaged (PyInstaller) builds."""
 
 
 def _sync_template_dir(template_dir: Path, vendored_dir: Path, *, create: bool = False) -> list[str]:
@@ -146,12 +152,12 @@ def refresh_vendored_sdk(frontend_dir: Path) -> None:
     (generation prompt rule), so a straight replace is safe. No-op when either
     side is missing. server/ is converged file-by-file (never rmtree'd) because
     server/functions/ next to sdk.py is the app's own code."""
-    template_sdk = _template_root() / "src" / "sdk"
+    template_sdk = template_root() / "src" / "sdk"
     vendored = frontend_dir / "src" / "sdk"
     if template_sdk.exists() and vendored.exists():
         shutil.rmtree(vendored)
         shutil.copytree(template_sdk, vendored)
-        _sync_template_dir(_template_root() / "server", frontend_dir / "server", create=True)
+        _sync_template_dir(template_root() / "server", frontend_dir / "server", create=True)
 
 
 def sync_vendored_sdk(frontend_dir: Path) -> list[str]:
@@ -165,10 +171,10 @@ def sync_vendored_sdk(frontend_dir: Path) -> list[str]:
     # every app has one, so real apps still gain server/sdk.py.
     if not (frontend_dir / "src" / "sdk").exists():
         return []
-    updated = _sync_template_dir(_template_root() / "src" / "sdk", frontend_dir / "src" / "sdk")
+    updated = _sync_template_dir(template_root() / "src" / "sdk", frontend_dir / "src" / "sdk")
     updated += [
         f"server/{name}"
-        for name in _sync_template_dir(_template_root() / "server", frontend_dir / "server", create=True)
+        for name in _sync_template_dir(template_root() / "server", frontend_dir / "server", create=True)
     ]
     return updated
 
@@ -357,37 +363,27 @@ class AppsService:
 
     def _scaffold_app(self, app_id: str) -> None:
         """Copy the app template to the app's draft directory."""
-        template_dir = Path(__file__).parent.parent.parent.parent / "app-template"
+        template_dir = template_root()
         app_dir = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
 
-        if template_dir.exists():
-            # node_modules (~140MB / 11.5k files in a dev checkout) is NOT
-            # copied — it made POST /api/apps block ~40s. The first consumer
-            # that needs dependencies provisions it instead: preview start
-            # (runtime/manager._do_start) and the AI verifier (stage 0) both
-            # try the offline template copy via apps.provisioning and fall
-            # back to npm install if the app's declared deps drifted.
-            shutil.copytree(
-                template_dir, app_dir, dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns("node_modules"),
+        if not template_dir.is_dir():
+            # No silent husk fallback: fail the creation loudly instead.
+            raise TemplateMissingError(
+                f"app-template not found at {template_dir} — cannot scaffold the app. "
+                "The installation is missing its app scaffold "
+                "(set AIHUB_APP_TEMPLATE_DIR to override the location)."
             )
-        else:
-            # Create minimal structure if template doesn't exist yet
-            app_dir.mkdir(parents=True, exist_ok=True)
-            src_dir = app_dir / "src"
-            src_dir.mkdir(exist_ok=True)
 
-            (src_dir / "App.tsx").write_text(
-                'export default function App() {\n'
-                '  return (\n'
-                '    <div className="min-h-screen bg-zinc-950 p-8 text-zinc-100">\n'
-                '      <h1 className="text-2xl font-semibold">New App</h1>\n'
-                '      <p className="mt-2 text-zinc-400">Start building by chatting with AI</p>\n'
-                '    </div>\n'
-                '  )\n'
-                '}\n',
-                encoding='utf-8',
-            )
+        # node_modules (~140MB / 11.5k files in a dev checkout) is NOT
+        # copied — it made POST /api/apps block ~40s. The first consumer
+        # that needs dependencies provisions it instead: preview start
+        # (runtime/manager._do_start) and the AI verifier (stage 0) both
+        # try the offline template copy via apps.provisioning and fall
+        # back to npm install if the app's declared deps drifted.
+        shutil.copytree(
+            template_dir, app_dir, dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(*SCAFFOLD_IGNORE),
+        )
 
     def _build_tree(self, root: Path, base: Path) -> list[dict]:
         entries = []

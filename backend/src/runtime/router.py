@@ -129,9 +129,14 @@ async def start_app(
             from pathlib import Path
 
             from ..config import settings
+            from ..app_template import heal_missing_scaffold
             from ..apps.service import sync_vendored_sdk
 
             frontend_dir = Path(settings.app_data_dir).resolve() / app_id / "draft" / "frontend"
+            # Restore scaffold files the draft is missing (add-only, never
+            # overwrites) — repairs husks created while app-template couldn't
+            # be located, before the vite start below trips over them.
+            heal_missing_scaffold(frontend_dir)
             updated = sync_vendored_sdk(frontend_dir)
             if updated:
                 logger.info("re-vendored SDK for %s: %s", app_id, ", ".join(updated))

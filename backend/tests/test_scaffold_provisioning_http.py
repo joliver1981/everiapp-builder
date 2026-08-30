@@ -142,7 +142,7 @@ def test_first_verify_provisions_from_template_without_npm(client, admin_token, 
     (t / "node_modules").mkdir(parents=True)
     (t / "node_modules" / "marker.txt").write_text("provisioned", encoding="utf-8")
     (t / "package.json").write_text((draft / "package.json").read_text(encoding="utf-8"), encoding="utf-8")
-    monkeypatch.setattr(provisioning, "TEMPLATE_DIR", t)
+    monkeypatch.setattr(provisioning, "template_root", lambda: t)
 
     async def _no_npm(*args, **kwargs):
         raise AssertionError("npm install must not run when the template copy suffices")

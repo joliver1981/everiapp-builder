@@ -31,6 +31,7 @@ from pathlib import Path
 import httpx
 
 from ..config import settings
+from ..app_template import heal_missing_scaffold, template_root
 from ..apps.provisioning import try_copy_template_node_modules
 from .probe_shared import (
     A11Y_AUDIT_JS as _A11Y_AUDIT_JS,
@@ -145,6 +146,13 @@ async def ensure_node_modules(app_id: str) -> VerifyError | None:
     if not app_dir.exists():
         return VerifyError(stage="build", file=None, line=None, column=None, code=None,
                            message=f"App draft directory missing: {app_dir}")
+
+    # Restore any scaffold files the draft is missing (never overwrites). A
+    # draft created while app-template couldn't be located is a husk with no
+    # package.json — npm install in it dies with an opaque ENOENT. Healing
+    # here also gives older apps scaffold files added by platform updates.
+    await asyncio.to_thread(heal_missing_scaffold, app_dir)
+
     if (app_dir / "node_modules").exists():
         return None
 
@@ -158,9 +166,17 @@ async def ensure_node_modules(app_id: str) -> VerifyError | None:
         timeout=180,
     )
     if rc != 0:
+        detail = ""
+        if not (app_dir / "package.json").is_file():
+            # Healing couldn't restore it → the template itself is unresolvable.
+            detail = (
+                f"\n\npackage.json is missing from the app draft and the platform's "
+                f"app-template could not be found at {template_root()} — the "
+                f"installation is incomplete (AIHUB_APP_TEMPLATE_DIR overrides the location)."
+            )
         return VerifyError(
             stage="build", file="package.json", line=None, column=None, code=None,
-            message=f"npm install failed:\n{(err or out)[:1000]}",
+            message=f"npm install failed:\n{(err or out)[:1000]}{detail}",
         )
     return None
 

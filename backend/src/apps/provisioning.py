@@ -19,9 +19,9 @@ import os
 import shutil
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from ..app_template import template_root
 
-TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "app-template"
+logger = logging.getLogger(__name__)
 
 
 def _declared_deps(package_json: Path) -> tuple[dict, dict] | None:
@@ -42,7 +42,7 @@ def template_satisfies(app_dir: Path, template_dir: Path | None = None) -> bool:
     files to declare identical dependencies/devDependencies — an app whose deps
     drifted needs its own npm install (matching today's behavior for such apps).
     """
-    t = TEMPLATE_DIR if template_dir is None else template_dir
+    t = template_root() if template_dir is None else template_dir
     if not (t / "node_modules").is_dir():
         return False
     t_deps = _declared_deps(t / "package.json")
@@ -62,7 +62,7 @@ async def try_copy_template_node_modules(app_dir: Path, template_dir: Path | Non
     dest = app_dir / "node_modules"
     if dest.exists():
         return True
-    t = TEMPLATE_DIR if template_dir is None else template_dir
+    t = template_root() if template_dir is None else template_dir
     if not template_satisfies(app_dir, t):
         return False
 

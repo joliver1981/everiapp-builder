@@ -9,7 +9,7 @@ from .schemas import (
     AppPermissionCreate, AppPermissionResponse,
     FileWriteRequest, WizardUpdateRequest, SetupApplyRequest,
 )
-from .service import apps_service
+from .service import TemplateMissingError, apps_service, sanitized_wizard
 from ..runtime.manager import runtime_manager
 
 router = APIRouter()
@@ -37,7 +37,10 @@ def _app_to_response(app, creator=None) -> AppResponse:
         bug_fix_auto_approve_max_risk=app.bug_fix_auto_approve_max_risk,
         ai_verify_level=app.ai_verify_level,
         ai_verify_max_iterations=app.ai_verify_max_iterations,
-        setup_wizard=app.setup_wizard,
+        # Lenient like every other stored-wizard reader: a legacy/invalid row
+        # (pre-validation imports) must degrade to "no wizard", not fail
+        # AppResponse validation and 500 the entire app listing.
+        setup_wizard=sanitized_wizard(app.setup_wizard),
         setup_instructions=app.setup_instructions or "",
         last_published_version=app.last_published_version or "",
         marketplace_listing=app.marketplace_listing,
@@ -64,7 +67,12 @@ async def create_app(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_role("admin", "developer")),
 ):
-    app = await apps_service.create_app(db, body, user.id)
+    try:
+        app = await apps_service.create_app(db, body, user.id)
+    except TemplateMissingError as e:
+        # Surface the real reason (broken/incomplete install) instead of a
+        # generic 500 — nothing was committed, no husk draft was left behind.
+        raise HTTPException(status_code=500, detail=str(e))
     return _app_to_response(app, user)
 
 
