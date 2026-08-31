@@ -87,6 +87,8 @@ _UI_PAYLOAD = {
     "bug_analysis_max_output_tokens": 8192,
     "marketplace_suggest_max_output_tokens": 2048,
     "decision_max_input_chars": 0,
+    "llm_stream_timeout_seconds": 900,
+    "llm_request_timeout_seconds": 1200,
     "generation_history_window": 25,
 }
 

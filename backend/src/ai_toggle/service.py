@@ -46,7 +46,8 @@ class AIToggleService:
                 {"role": "user", "content": request.message},
             ]
 
-            from ..platform_settings.service import get_output_cap
+            from ..platform_settings.service import get_output_cap, effective_llm_timeouts
+            _, _request_t = await effective_llm_timeouts(db, provider_config)
             response = await acompletion(
                 model=llm_model,
                 messages=messages,
@@ -57,6 +58,7 @@ class AIToggleService:
                 # Settings → AI output limits); small replies cost the same.
                 max_tokens=await get_output_cap(db, "assistant_max_output_tokens"),
                 temperature=0.5,
+                timeout=_request_t,
                 aihub_span={"app_id": app_id, "user_id": user_id,
                             "purpose": "ai_toggle",
                             "provider_type": provider_type, "model": model},

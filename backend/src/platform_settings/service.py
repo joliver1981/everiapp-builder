@@ -37,6 +37,13 @@ DEFAULTS: dict[str, Any] = {
     # so there's no reason to cap by default. An operator can set a value purely
     # for cost control.
     "decision_max_input_chars": 0,
+    # LLM timeouts (seconds), admin-tunable without a service restart.
+    # 0 = inherit the .env / coded default (llm_stream_timeout /
+    # llm_request_timeout in config.py). A per-provider timeout set in
+    # Admin → AI Providers overrides both — some models (deep reasoners)
+    # legitimately sit quiet for minutes before their first token.
+    "llm_stream_timeout_seconds": 0,
+    "llm_request_timeout_seconds": 0,
     # Builder conversation-history window: how many recent messages of FULL
     # context (large, code-carrying assistant turns included) to send per
     # generation turn. ALL earlier user messages are always included on top of
@@ -168,6 +175,41 @@ async def get_output_cap(db: AsyncSession, key: str) -> int:
     if val <= 0:
         return 0
     return min(max(OUTPUT_CAP_FLOOR, val), OUTPUT_CAP_CEIL)
+
+
+# Sanity bounds for LLM timeouts (explicit values only; 0 = inherit).
+LLM_TIMEOUT_FLOOR = 10
+LLM_TIMEOUT_CEIL = 86400
+
+
+async def effective_llm_timeouts(db: AsyncSession, provider_config: dict | None = None) -> tuple[int, int]:
+    """(stream_timeout, request_timeout) in seconds for an LLM call.
+
+    Resolution, most specific wins:
+      1. the provider's own timeout_seconds (Admin → AI Providers; 0 = inherit)
+         — applied to BOTH values (a slow model is slow either way),
+      2. the admin platform settings llm_stream/request_timeout_seconds
+         (0 = inherit),
+      3. the .env / coded defaults (config.settings).
+    Never raises — garbage anywhere falls through to the next tier.
+    """
+    from ..config import settings as _settings
+
+    def _clean(raw) -> int:
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        if val <= 0:
+            return 0
+        return min(max(LLM_TIMEOUT_FLOOR, val), LLM_TIMEOUT_CEIL)
+
+    per_provider = _clean((provider_config or {}).get("timeout_seconds"))
+    if per_provider:
+        return per_provider, per_provider
+    stream = _clean(await get_setting(db, "llm_stream_timeout_seconds")) or int(_settings.llm_stream_timeout)
+    request = _clean(await get_setting(db, "llm_request_timeout_seconds")) or int(_settings.llm_request_timeout)
+    return stream, request
 
 
 # ---------------------------------------------------------------------------

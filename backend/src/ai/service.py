@@ -86,7 +86,12 @@ async def _stream_with_watchdog(response, provider_label: str, *,
                     raise RuntimeError(
                         f"No response data from {provider_label} for {int(silent)}s — "
                         "aborting this turn. The provider may be unreachable from this "
-                        "server or overloaded; Admin > AI Providers > Test checks it."
+                        "server or overloaded (Admin > AI Providers > Test checks it) — "
+                        "or this model may simply think longer than the current limit: "
+                        "deep-reasoning models can stay quiet for minutes before their "
+                        "first token. Raise the timeout for this provider in Admin > "
+                        "AI Providers, or the platform default in Platform > Settings > "
+                        "LLM timeouts."
                     )
                 yield ("status", (
                     f"\n\n_Still waiting on {provider_label} — {int(silent)}s without "
@@ -462,7 +467,11 @@ class AIService:
             _usage_out = 0
             _finish_reason: str | None = None
 
-            from ..platform_settings.service import get_output_cap
+            from ..platform_settings.service import get_output_cap, effective_llm_timeouts
+            # Per-provider timeout > admin setting > .env default. Deep-reasoning
+            # models sit quiet for minutes before their first token — a global
+            # 180s silence cap aborted real turns at a client site.
+            _stream_t, _request_t = await effective_llm_timeouts(db, provider_config)
             response = await acompletion(
                 model=llm_model,
                 messages=messages,
@@ -472,6 +481,7 @@ class AIService:
                 temperature=0.7,
                 stream=True,
                 stream_options={"include_usage": True},
+                timeout=_stream_t,
             )
 
             # Stream prose to the chat (code-block interiors stay suppressed there); when
@@ -482,7 +492,7 @@ class AIService:
             _watched = _stream_with_watchdog(
                 response,
                 f"{provider_type}/{model}",
-                silence_timeout=float(settings.llm_stream_timeout),
+                silence_timeout=float(_stream_t),
             )
             async for _wkind, _witem in _watched:
                 if _wkind == "status":
@@ -932,7 +942,8 @@ class AIService:
             llm_model = litellm_model(provider_type, model)
 
             try:
-                from ..platform_settings.service import get_output_cap
+                from ..platform_settings.service import get_output_cap, effective_llm_timeouts
+                _, _fix_request_t = await effective_llm_timeouts(db, provider_config)
                 fix_response = await acompletion(
                     model=llm_model,
                     messages=messages,
@@ -941,6 +952,7 @@ class AIService:
                     max_tokens=await get_output_cap(db, "self_heal_max_output_tokens"),
                     temperature=0.2,
                     stream=False,
+                    timeout=_fix_request_t,
                     aihub_span={"app_id": app_id, "user_id": user_id,
                                 "purpose": "self_heal",
                                 "provider_type": provider_type, "model": model},

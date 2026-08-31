@@ -710,6 +710,8 @@ function SettingsTab() {
       bug_analysis_max_output_tokens: Number(settings.bug_analysis_max_output_tokens),
       marketplace_suggest_max_output_tokens: Number(settings.marketplace_suggest_max_output_tokens),
       decision_max_input_chars: Number(settings.decision_max_input_chars),
+      llm_stream_timeout_seconds: Number(settings.llm_stream_timeout_seconds),
+      llm_request_timeout_seconds: Number(settings.llm_request_timeout_seconds),
       generation_history_window: Number(settings.generation_history_window),
       security_scan_enabled: !!settings.security_scan_enabled,
       security_scan_block_publish: !!settings.security_scan_block_publish,
@@ -808,6 +810,27 @@ function SettingsTab() {
           <input type="number" min="0" value={settings.decision_max_input_chars ?? 0}
                  onChange={(e) => set({ decision_max_input_chars: e.target.value })} className={cn(inputCls, 'w-40')} />
         </Labeled>
+      </Section>
+
+      <Section title="LLM timeouts (seconds)">
+        <p className="text-xs text-muted-foreground">
+          How long a turn may wait on a provider before aborting. Deep-reasoning models can
+          think for several minutes before their first streamed token — if turns abort with
+          "No response data from …", raise these (or set a per-provider timeout in
+          Admin → AI Providers, which overrides both). 0 = the server default
+          (LLM_STREAM_TIMEOUT / LLM_REQUEST_TIMEOUT in the service .env, 600s out of the box).
+          Applies without a restart.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="Streaming silence" hint="max quiet period on a builder-chat stream · 0 = server default">
+            <input type="number" min="0" max="86400" value={settings.llm_stream_timeout_seconds ?? 0}
+                   onChange={(e) => set({ llm_stream_timeout_seconds: e.target.value })} className={inputCls} />
+          </Labeled>
+          <Labeled label="Whole request" hint="cap on a non-streaming call (self-heal fixes, assistant, analysis) · 0 = server default">
+            <input type="number" min="0" max="86400" value={settings.llm_request_timeout_seconds ?? 0}
+                   onChange={(e) => set({ llm_request_timeout_seconds: e.target.value })} className={inputCls} />
+          </Labeled>
+        </div>
       </Section>
 
       <Section title="LLM budget">

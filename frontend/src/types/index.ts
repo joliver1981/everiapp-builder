@@ -267,6 +267,7 @@ export interface AIProvider {
   is_default_generation: boolean
   is_default_toggle: boolean
   default_model: string
+  timeout_seconds?: number  // 0 = inherit the platform default
   last_verified: string | null
   created_at: string
 }

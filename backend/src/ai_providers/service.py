@@ -42,6 +42,7 @@ class AIProviderService:
             "is_default_generation": data.is_default_generation,
             "is_default_toggle": data.is_default_toggle,
             "extra_config": data.extra_config,
+            "timeout_seconds": data.timeout_seconds,
             "last_verified": None,
         }
 
@@ -95,6 +96,8 @@ class AIProviderService:
             meta["is_default_toggle"] = data.is_default_toggle
         if data.extra_config is not None:
             meta["extra_config"] = data.extra_config
+        if data.timeout_seconds is not None:
+            meta["timeout_seconds"] = data.timeout_seconds  # 0 = inherit
 
         secret.metadata_json = meta
         secret.updated_at = datetime.now(timezone.utc)
@@ -318,6 +321,9 @@ class AIProviderService:
             "model": model_override or meta.get("default_model"),
             "api_key": api_key,
             "base_url": meta.get("base_url") or None,
+            # 0 = inherit the platform default; resolved by
+            # platform_settings.effective_llm_timeouts at call time.
+            "timeout_seconds": meta.get("timeout_seconds") or 0,
         }
 
     def _provider_name(self, secret: Secret) -> str:
@@ -346,6 +352,7 @@ class AIProviderService:
             default_model=meta.get("default_model", ""),
             base_url=meta.get("base_url", ""),
             extra_config=meta.get("extra_config", {}),
+            timeout_seconds=meta.get("timeout_seconds") or 0,
             last_verified=meta.get("last_verified"),
             created_at=secret.created_at.isoformat(),
             updated_at=secret.updated_at.isoformat(),

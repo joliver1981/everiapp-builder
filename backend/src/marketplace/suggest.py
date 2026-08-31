@@ -166,7 +166,8 @@ async def suggest_metadata(
     model = provider_config["model"]
     llm_model = litellm_model(provider_type, model)
 
-    from ..platform_settings.service import get_output_cap
+    from ..platform_settings.service import get_output_cap, effective_llm_timeouts
+    _, _request_t = await effective_llm_timeouts(db, provider_config)
     response = await acompletion(
         model=llm_model,
         messages=[
@@ -177,6 +178,7 @@ async def suggest_metadata(
         base_url=provider_config.get("base_url"),
         max_tokens=await get_output_cap(db, "marketplace_suggest_max_output_tokens"),
         temperature=0.4,
+        timeout=_request_t,
         aihub_span={"app_id": app_id, "user_id": user.id,
                     "purpose": "marketplace_metadata",
                     "provider_type": provider_type, "model": model},

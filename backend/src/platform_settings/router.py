@@ -25,6 +25,8 @@ class SettingsIn(BaseModel):
     bug_analysis_max_output_tokens: int | None = None
     marketplace_suggest_max_output_tokens: int | None = None
     decision_max_input_chars: int | None = None
+    llm_stream_timeout_seconds: int | None = None
+    llm_request_timeout_seconds: int | None = None
     generation_history_window: int | None = None
     security_scan_enabled: bool | None = None
     security_scan_block_publish: bool | None = None

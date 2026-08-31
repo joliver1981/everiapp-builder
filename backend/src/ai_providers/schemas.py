@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AIProviderCreate(BaseModel):
@@ -10,6 +10,10 @@ class AIProviderCreate(BaseModel):
     is_default_generation: bool = False  # Default for app generation
     is_default_toggle: bool = False  # Default for AI Toggle
     extra_config: dict = {}  # Rate limits, org ID, etc.
+    # Per-provider LLM timeout override (seconds). 0 = inherit the platform
+    # default. Deep-reasoning models can sit quiet for minutes before their
+    # first streamed token — this keeps the watchdog from aborting them.
+    timeout_seconds: int = Field(0, ge=0, le=86400)
 
 
 class AIProviderUpdate(BaseModel):
@@ -21,6 +25,7 @@ class AIProviderUpdate(BaseModel):
     is_default_generation: bool | None = None
     is_default_toggle: bool | None = None
     extra_config: dict | None = None
+    timeout_seconds: int | None = Field(None, ge=0, le=86400)  # 0 = inherit
 
 
 class AIProviderResponse(BaseModel):
@@ -33,6 +38,7 @@ class AIProviderResponse(BaseModel):
     default_model: str
     base_url: str
     extra_config: dict
+    timeout_seconds: int = 0  # 0 = inherit the platform default
     last_verified: str | None
     created_at: str
     updated_at: str

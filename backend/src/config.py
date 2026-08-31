@@ -135,7 +135,12 @@ class Settings(BaseSettings):
     # error (a stalled provider connection used to leave the builder on
     # "Thinking..." forever). llm_request_timeout caps a whole non-streaming
     # call, sized generously for big single-shot generations.
-    llm_stream_timeout: int = 180
+    # These .env values are the LAST-RESORT defaults: an admin platform
+    # setting (Platform → Settings) overrides them without a restart, and a
+    # per-provider timeout (Admin → AI Providers) overrides both — deep-
+    # reasoning models can sit quiet for minutes before their first token
+    # (the old 180s default aborted real Fable 5 turns at a client site).
+    llm_stream_timeout: int = 600
     llm_request_timeout: int = 600
     pip_command_timeout: int = 600  # admin server-function package installs (pip)
     deployment_cors_allow_pattern: str = ""  # extra regex for CORS (e.g. "https?://192\\.168\\.\\d+\\.\\d+(:\\d+)?")

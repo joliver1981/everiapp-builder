@@ -101,6 +101,7 @@ export function AdminAIProvidersPage() {
     default_model: 'gpt-5.5',
     is_default_generation: false,
     is_default_toggle: false,
+    timeout_seconds: 0,
   })
 
   // Local drafts for the per-purpose model override inputs (committed on blur).
@@ -170,6 +171,7 @@ export function AdminAIProvidersPage() {
   const EMPTY_FORM = {
     name: '', provider_type: 'openai', api_key: '', base_url: '',
     default_model: 'gpt-5.5', is_default_generation: false, is_default_toggle: false,
+    timeout_seconds: 0,
   }
 
   const openCreate = () => {
@@ -189,6 +191,7 @@ export function AdminAIProvidersPage() {
       default_model: provider.default_model || '',
       is_default_generation: provider.is_default_generation,
       is_default_toggle: provider.is_default_toggle,
+      timeout_seconds: provider.timeout_seconds || 0,
     })
     setTestResult(null)
     setShowForm(true)
@@ -214,12 +217,15 @@ export function AdminAIProvidersPage() {
           default_model: formData.default_model,
           is_default_generation: formData.is_default_generation,
           is_default_toggle: formData.is_default_toggle,
+          timeout_seconds: Number(formData.timeout_seconds) || 0,
         }
         if (formData.api_key) body.api_key = formData.api_key
         const updated = await apiClient.put<AIProvider>(`/admin/ai-providers/${editingId}`, body)
         providerId = updated.id
       } else {
-        const created = await apiClient.post<AIProvider>('/admin/ai-providers', formData)
+        const created = await apiClient.post<AIProvider>('/admin/ai-providers', {
+          ...formData, timeout_seconds: Number(formData.timeout_seconds) || 0,
+        })
         providerId = created.id
       }
       closeForm()
@@ -367,6 +373,22 @@ export function AdminAIProvidersPage() {
                   />
                 </div>
               )}
+              <div className="col-span-2">
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Timeout (seconds) — 0 = platform default
+                </label>
+                <input
+                  type="number" min="0" max="86400"
+                  value={formData.timeout_seconds}
+                  onChange={(e) => setFormData({ ...formData, timeout_seconds: e.target.value as unknown as number })}
+                  className="w-40 rounded-lg border border-input bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  How long a turn may wait on this provider before aborting (max quiet period while
+                  streaming; whole-call limit otherwise). Deep-reasoning models can think for several
+                  minutes before their first token — raise this if turns abort with "No response data".
+                </p>
+              </div>
               <div className="col-span-2 flex gap-6">
                 <label className="flex items-center gap-2 text-sm">
                   <input
