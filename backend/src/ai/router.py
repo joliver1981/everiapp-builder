@@ -2,7 +2,7 @@ import logging
 import time
 from collections import defaultdict
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, File, Form, UploadFile, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db, async_session
 from ..auth.service import auth_service
@@ -11,6 +11,8 @@ from ..auth.models import User
 from ..ai_providers.service import ai_provider_service
 from .service import ai_service
 from . import snapshots
+from .attachments import classify_upload, ACCEPTED_DESCRIPTION, meta as attachment_meta
+from ..llm_compat import model_capabilities
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,17 +66,107 @@ async def list_available_providers(
 ):
     """List available AI providers for any authenticated user (non-sensitive info only)."""
     providers = await ai_provider_service.list_providers(db)
-    return [
-        {
+    out = []
+    for p in providers:
+        if not p.is_active:
+            continue
+        # Input-modality hints for the attachment UI: True/False when litellm
+        # knows the model, None for brand-new ids (the UI treats None as "try").
+        caps = model_capabilities(p.provider_type, p.default_model)
+        out.append({
             "id": p.id,
             "name": p.name,
             "provider_type": p.provider_type,
             "default_model": p.default_model,
             "is_default_generation": p.is_default_generation,
-        }
-        for p in providers
-        if p.is_active
-    ]
+            "supports_vision": caps.get("vision"),
+            "supports_pdf": caps.get("pdf"),
+        })
+    return out
+
+
+# --- Chat attachments (screenshots, images, PDFs, text files) ---------------
+# Files are uploaded over HTTP BEFORE the chat message is sent (multipart, no
+# base64 inflation, no WebSocket frame-size ceiling), then referenced from the
+# WS payload by id. Unbound uploads older than a day are pruned lazily.
+_PENDING_ATTACHMENT_TTL_HOURS = 24
+
+
+@router.post("/attachments")
+async def upload_attachments(
+    app_id: str = Form(...),
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Store one or more chat attachments for `app_id`; returns their ids +
+    metadata for the WS `attachment_ids` field. Unsupported types are refused
+    (415) before anything is stored — nothing is ever silently dropped."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete
+    from ..apps.models import App, MessageAttachment
+
+    if await db.get(App, app_id) is None:
+        raise HTTPException(status_code=404, detail="App not found")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    classified = []
+    for f in files:
+        cls = classify_upload(f.filename, f.content_type)
+        if cls is None:
+            raise HTTPException(
+                status_code=415,
+                detail=f"'{f.filename or 'file'}' is not a supported attachment type. "
+                       f"Supported: {ACCEPTED_DESCRIPTION}.",
+            )
+        classified.append((f, cls))
+
+    rows: list[MessageAttachment] = []
+    for f, (kind, mime) in classified:
+        data = await f.read()
+        if not data:
+            raise HTTPException(status_code=400, detail=f"'{f.filename or 'file'}' is empty")
+        rows.append(MessageAttachment(
+            app_id=app_id, user_id=user.id,
+            filename=(f.filename or f"attachment.{kind}")[:255],
+            mime=mime, kind=kind, size=len(data), data=data,
+        ))
+        db.add(rows[-1])
+
+    # Best-effort prune of uploads that were never sent.
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=_PENDING_ATTACHMENT_TTL_HOURS)
+        await db.execute(delete(MessageAttachment).where(
+            MessageAttachment.message_id.is_(None), MessageAttachment.created_at < cutoff))
+    except Exception:
+        logger.exception("pending-attachment prune failed (ignored)")
+
+    await db.flush()  # ids are generated at flush
+    await db.commit()
+    return {"attachments": [attachment_meta(r) for r in rows]}
+
+
+@router.get("/attachments/{attachment_id}")
+async def get_attachment(
+    attachment_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """The stored bytes of an attachment (thumbnails / open-in-new-tab)."""
+    from ..apps.models import MessageAttachment
+    row = await db.get(MessageAttachment, attachment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    safe_name = "".join(ch for ch in (row.filename or "attachment") if ch >= " " and ch not in '"\\')
+    return Response(
+        content=row.data,
+        media_type=row.mime or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
 
 
 @router.get("/conversations/{app_id}")
@@ -114,6 +206,21 @@ async def get_conversation_history(
     # created before chips existed get repaired too.
     from .code_parser import extract_jump_directives
 
+    # Attachment metadata (never the bytes) per message, one query.
+    from ..apps.models import MessageAttachment
+    att_by_msg: dict[str, list[dict]] = {}
+    msg_ids = [m.id for m in messages if m.role == "user"]
+    if msg_ids:
+        rows = (await db.execute(
+            select(MessageAttachment.id, MessageAttachment.message_id, MessageAttachment.filename,
+                   MessageAttachment.mime, MessageAttachment.kind, MessageAttachment.size)
+            .where(MessageAttachment.message_id.in_(msg_ids))
+            .order_by(MessageAttachment.created_at)
+        )).all()
+        for r in rows:
+            att_by_msg.setdefault(r.message_id, []).append(
+                {"id": r.id, "name": r.filename, "mime": r.mime, "kind": r.kind, "size": r.size})
+
     out_messages = []
     for msg in messages:
         content = msg.content or ""
@@ -125,6 +232,7 @@ async def get_conversation_history(
             "role": msg.role,
             "content": content,
             "code_refs": code_refs,
+            "attachments": att_by_msg.get(msg.id, []),
             "timestamp": msg.created_at.isoformat(),
         })
 
@@ -196,8 +304,19 @@ async def websocket_chat(websocket: WebSocket):
             editor_context = data.get("editor_context")  # what the user is viewing (in-code overlay)
             if not isinstance(editor_context, dict):
                 editor_context = None
+            # Ids from POST /api/ai/attachments (screenshots, PDFs, text files).
+            attachment_ids = data.get("attachment_ids")
+            if not isinstance(attachment_ids, list):
+                attachment_ids = []
+            attachment_ids = [str(i) for i in attachment_ids if isinstance(i, (str, int))]
+            if message is None:
+                message = ""
+            if not isinstance(message, str):
+                message = str(message)
 
-            if not app_id or not message:
+            # A message may be attachments-only ("what's wrong with this screenshot?"
+            # is often just the screenshot), but never empty.
+            if not app_id or (not message.strip() and not attachment_ids):
                 await websocket.send_json({"type": "error", "data": "app_id and message required"})
                 continue
 
@@ -223,7 +342,7 @@ async def websocket_chat(websocket: WebSocket):
                         "message": "Your account has been deactivated"}})
                     await websocket.close(code=4401)
                     return
-                async for chunk in ai_service.chat(db, app_id, message, conversation_id, provider_id, user_id=user_id, live_code=live_code, editor_context=editor_context):
+                async for chunk in ai_service.chat(db, app_id, message, conversation_id, provider_id, user_id=user_id, live_code=live_code, editor_context=editor_context, attachment_ids=attachment_ids):
                     await websocket.send_json(chunk)
 
     except WebSocketDisconnect:

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Text, Boolean, Integer, JSON
+from sqlalchemy import String, DateTime, ForeignKey, Text, Boolean, Integer, JSON, LargeBinary
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ..database import Base
 
@@ -131,6 +131,32 @@ class Message(Base):
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class MessageAttachment(Base):
+    """A file the user attached to a builder-chat message (screenshot, image,
+    PDF, or a text/code file).
+
+    Uploaded via POST /api/ai/attachments BEFORE the chat message is sent
+    (message_id NULL = "pending"), then bound to the user Message the turn
+    persists. Bytes live here (SQLite blobs), never on the messages row, so
+    conversation history reads stay cheap — the blob is only loaded when a
+    turn replays the attachment to the model or the UI fetches a thumbnail.
+    `app_id` is denormalised so delete_app can clear an app's attachments in
+    one statement (FK to messages has no cascade on existing DBs).
+    """
+    __tablename__ = "message_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    message_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("messages.id"), nullable=True, index=True)
+    app_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    mime: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(20))  # image | pdf | text
+    size: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # Import User to resolve relationship

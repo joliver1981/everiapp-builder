@@ -322,6 +322,10 @@ class AppsService:
         from ..datasets.models import AppDatasetBinding
         await db.execute(delete(AppConnectionBinding).where(AppConnectionBinding.app_id == app_id))
         await db.execute(delete(AppDatasetBinding).where(AppDatasetBinding.app_id == app_id))
+        # Chat attachments (screenshots/PDFs) reference messages without a
+        # cascade; clear them before the conversations go with the app.
+        from .models import MessageAttachment
+        await db.execute(delete(MessageAttachment).where(MessageAttachment.app_id == app_id))
 
         await db.delete(app)
         await db.commit()

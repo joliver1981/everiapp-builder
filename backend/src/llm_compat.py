@@ -80,6 +80,49 @@ def model_max_output_tokens(model: str | None) -> int | None:
         return None
 
 
+# Provider types whose current chat models all accept image and PDF input.
+# Used ONLY when litellm's registry does not know the model (brand-new ids):
+# we assume the modern default and let the provider's own 400 surface if it
+# disagrees, rather than refusing up front.
+_ASSUME_MULTIMODAL_PROVIDERS = frozenset(
+    {"anthropic", "openai", "azure", "openrouter", "gemini", "vertex_ai", "bedrock"}
+)
+
+
+def model_capabilities(provider_type: str | None, model: str | None) -> dict:
+    """Best-effort input-modality capabilities for a (provider, model) pair.
+
+    Returns {"vision": bool | None, "pdf": bool | None, "known": bool}.
+    A bool is litellm's registry answer for a model it knows; None means
+    "unknown model, no opinion" (the caller decides whether to try). A
+    registry that knows the model but lists no vision support yields False —
+    that is the only case worth refusing an image before spending a turn.
+    Never raises.
+    """
+    llm = litellm_model(provider_type, model)
+    p = (provider_type or "").strip().lower()
+    m = (model or "").strip()
+    try:
+        import litellm
+        from litellm.utils import supports_pdf_input, supports_vision
+        # "Known" means literally present in litellm's model map. get_model_info
+        # alone is not enough: some providers (ollama, custom OpenAI-compatible
+        # servers) answer with a generic fallback entry for ANY name, which
+        # would refuse images on models that take them perfectly well.
+        registry = getattr(litellm, "model_cost", {}) or {}
+        candidates = {llm, m, f"{p}/{m}" if p and m else ""} - {""}
+        if not any(c in registry for c in candidates):
+            raise KeyError("not in model map")
+        return {
+            "vision": bool(supports_vision(model=llm)),
+            "pdf": bool(supports_pdf_input(model=llm)),
+            "known": True,
+        }
+    except Exception:
+        assume = p in _ASSUME_MULTIMODAL_PROVIDERS
+        return {"vision": True if assume else None, "pdf": True if assume else None, "known": False}
+
+
 def resolve_max_tokens(requested: int | None, model: str | None) -> int:
     """Effective max_tokens for a call: 0/None = the model's own maximum
     (fallback when unknown); a positive request is clamped to the model's max."""

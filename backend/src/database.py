@@ -119,7 +119,7 @@ async def _apply_column_migrations() -> None:
 async def init_db():
     # Import all models so they register with Base.metadata
     from .auth.models import User, RefreshToken, IdentityProviderConfig  # noqa: F401
-    from .apps.models import App, AppVersion, AppPermission, AppSetting, Conversation, Message  # noqa: F401
+    from .apps.models import App, AppVersion, AppPermission, AppSetting, Conversation, Message, MessageAttachment  # noqa: F401
     from .secrets.models import Secret, AuditLog  # noqa: F401
     from .marketplace.models import MarketplaceListing  # noqa: F401
     from .deployments.models import Deployment, DeploymentTarget  # noqa: F401

@@ -8,6 +8,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { CodeBlock } from './CodeBlock'
 import { MermaidBlock } from './MermaidBlock'
 import { MockupBlock } from './MockupBlock'
+import { AttachmentList } from './AttachmentChips'
 
 // An inline-code token that looks like an app file path + optional :line or :line-line.
 // Strict (must start `src/`, must have an extension) so ordinary inline code like
@@ -66,7 +67,11 @@ export const MessageBubble = memo(function MessageBubble({ message }: MessageBub
           isUser ? 'bg-primary text-primary-foreground' : 'bg-accent text-foreground'
         )}
       >
-        <FormattedContent content={message.content} />
+        {isUser && message.attachments && message.attachments.length > 0 && (
+          <AttachmentList attachments={message.attachments} />
+        )}
+        {/* An attachments-only user message has no text — don't show the assistant's "Thinking…" pulse for it. */}
+        {(message.content || !isUser) && <FormattedContent content={message.content} />}
         {!isUser && message.codeRefs && message.codeRefs.length > 0 && (
           <CodeRefChips refs={message.codeRefs} />
         )}

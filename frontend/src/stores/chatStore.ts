@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { apiClient } from '@/api/client'
-import type { ChatMessage, CodeRef, EditorContext } from '@/types'
+import type { ChatAttachment, ChatMessage, CodeRef, EditorContext } from '@/types'
 
 interface FileChange {
   path: string
@@ -137,7 +137,7 @@ interface ChatState {
   clearMessages: () => void
   loadHistory: (messages: ChatMessage[], conversationId: string | null) => void
   connect: () => Promise<void>
-  sendMessage: (appId: string, message: string, providerId?: string | null, editorContext?: EditorContext | null) => void
+  sendMessage: (appId: string, message: string, providerId?: string | null, editorContext?: EditorContext | null, attachments?: ChatAttachment[]) => void
   rollbackDraft: () => Promise<{ ok: boolean; error?: string }>
   dismissVerifyResult: () => void
   disconnect: () => void
@@ -454,7 +454,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })
   },
 
-  sendMessage: (appId: string, message: string, providerId?: string | null, editorContext?: EditorContext | null) => {
+  sendMessage: (appId: string, message: string, providerId?: string | null, editorContext?: EditorContext | null, attachments?: ChatAttachment[]) => {
     const { ws, conversationId, isConnected } = get()
 
     if (!ws || ws.readyState !== WebSocket.OPEN || !isConnected) {
@@ -472,6 +472,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: `user-${++messageIdCounter}`,
       role: 'user',
       content: message,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
       timestamp: new Date().toISOString(),
     })
 
@@ -509,6 +510,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // What the user is looking at in the editor (sent from the in-code overlay) so the
         // AI focuses on the exact file/selection on screen. Omitted from the normal Chat tab.
         editor_context: editorContext || undefined,
+        // Files uploaded via POST /api/ai/attachments ahead of this message
+        // (screenshots, images, PDFs, text files) — the backend binds them to the
+        // saved user message and sends them to the model as multimodal parts.
+        attachment_ids: attachments && attachments.length > 0 ? attachments.map((a) => a.id) : undefined,
       })
     )
   },

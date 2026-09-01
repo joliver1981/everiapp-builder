@@ -19,7 +19,8 @@ from .code_parser import (
 from .wizard_prompts import is_wizard_request, WIZARD_GENERATION_PROMPT
 from . import snapshots
 from .verifier import VerifyResult, VerifyError, errors_to_prompt_block, verify_app
-from ..llm_compat import acompletion, litellm_model
+from ..llm_compat import acompletion, litellm_model, model_capabilities
+from .attachments import build_user_content, needs_vision, needs_pdf, meta as attachment_meta
 from ..ai_prompts import registry as prompt_registry
 from . import debug_log
 
@@ -352,7 +353,7 @@ def _format_editor_context(ctx: dict | None) -> str:
 
 
 class AIService:
-    async def chat(self, db: AsyncSession, app_id: str, user_message: str, conversation_id: str | None = None, provider_id: str | None = None, user_id: str | None = None, live_code: bool = False, editor_context: dict | None = None):
+    async def chat(self, db: AsyncSession, app_id: str, user_message: str, conversation_id: str | None = None, provider_id: str | None = None, user_id: str | None = None, live_code: bool = False, editor_context: dict | None = None, attachment_ids: list[str] | None = None):
         """Process a chat message and yield streaming response chunks.
 
         Yields dicts with keys: type ('status', 'text', 'files', 'code_stream',
@@ -363,7 +364,43 @@ class AIService:
         can show the AI writing each file live; harmless to leave off.
         `editor_context` (when provided, from the in-code overlay) tells the model exactly
         which file/lines the user is looking at + their selection, so it focuses there.
+        `attachment_ids` name files uploaded via POST /api/ai/attachments ahead of this
+        message (screenshots, images, PDFs, text files); they are bound to the saved user
+        message and sent to the model as multimodal content parts.
         """
+        # Resolve the provider FIRST: an attachment needs a capability check
+        # before anything is persisted, so a refused turn leaves no orphan
+        # user message behind (use selected provider or fall back to default).
+        if provider_id:
+            provider_config = await ai_provider_service.get_provider_config(db, provider_id)
+        else:
+            provider_config = await ai_provider_service.get_default_provider_config(db, purpose="generation")
+        if not provider_config:
+            yield {"type": "error", "data": "No AI provider configured. Please add one in Admin > AI Providers."}
+            return
+
+        # Attachments uploaded ahead of this message. Only THIS user's
+        # still-unbound uploads for THIS app count — an id from another
+        # user/app/message is simply "not found".
+        attachments = await self._load_pending_attachments(db, attachment_ids, app_id, user_id)
+        if attachment_ids and len(attachments) != len(set(attachment_ids)):
+            yield {"type": "error", "data": (
+                "One or more attachments could not be found — they may have expired or "
+                "already belong to an earlier message. Re-attach the file(s) and send again.")}
+            return
+        if attachments and (needs_vision(attachments) or needs_pdf(attachments)):
+            _caps = model_capabilities(provider_config["provider_type"], provider_config["model"])
+            # Only a model litellm KNOWS to be text-only is refused up front;
+            # unknown (brand-new) models are tried and the provider's own
+            # answer surfaces in the chat if it objects.
+            if _caps.get("vision") is False:
+                yield {"type": "error", "data": (
+                    f"The selected model ({provider_config['provider_type']}/"
+                    f"{provider_config['model']}) does not accept images or documents. "
+                    "Pick a vision-capable provider in the chat's provider menu (Claude, "
+                    "GPT-4o and newer, Gemini…) or remove the image/PDF attachments.")}
+                return
+
         # Get or create conversation
         if conversation_id:
             result = await db.execute(
@@ -374,7 +411,8 @@ class AIService:
             conversation = None
 
         if not conversation:
-            conversation = Conversation(app_id=app_id, title=user_message[:100])
+            _title = user_message or ", ".join(a.filename for a in attachments) or "New conversation"
+            conversation = Conversation(app_id=app_id, title=_title[:100])
             db.add(conversation)
             await db.flush()
 
@@ -385,6 +423,12 @@ class AIService:
             content=user_message,
         )
         db.add(user_msg)
+        if attachments:
+            # The message id is generated at flush (default=lambda); bind the
+            # uploads to it so history reloads + later turns can find them.
+            await db.flush()
+            for _a in attachments:
+                _a.message_id = user_msg.id
         # COMMIT (not flush) before the LLM stream starts. A flush opens
         # SQLite's single-writer transaction and the old code held it for the
         # entire multi-minute generation — every other writer on the platform
@@ -396,15 +440,6 @@ class AIService:
 
         # Build messages for LLM (editor_context focuses the model on what the user is viewing)
         messages = await self._build_messages(db, conversation, app_id, editor_context=editor_context, user_id=user_id)
-
-        # Get provider config — use selected provider or fall back to default
-        if provider_id:
-            provider_config = await ai_provider_service.get_provider_config(db, provider_id)
-        else:
-            provider_config = await ai_provider_service.get_default_provider_config(db, purpose="generation")
-        if not provider_config:
-            yield {"type": "error", "data": "No AI provider configured. Please add one in Admin > AI Providers."}
-            return
 
         # Remember the explicitly chosen provider on the app, so reopening the
         # builder keeps generating with the same model instead of reverting to
@@ -457,10 +492,13 @@ class AIService:
                 system_prompts=_sys_prompts, model=model, provider=provider_type,
                 conversation_id=conversation.id,
             )
+            _att_meta = [attachment_meta(a) for a in attachments]
             trace.step(type="context", system_prompt_count=len(_sys_prompts),
-                       message_count=len(messages), model=llm_model)
+                       message_count=len(messages), model=llm_model,
+                       attachments=_att_meta)
             debug_log.log("turn_start", app_id=app_id, conversation_id=conversation.id,
-                          user_message=user_message, model=llm_model, system_prompts=_sys_prompts)
+                          user_message=user_message, model=llm_model, system_prompts=_sys_prompts,
+                          attachments=_att_meta)
 
             full_response = ""
             _usage_in = 0
@@ -851,14 +889,77 @@ class AIService:
             window = int(await get_setting(db, "generation_history_window"))
         except (TypeError, ValueError):
             window = 30
-        for msg in _select_history_messages(history, window):
-            messages.append({"role": msg.role, "content": msg.content})
+        # Attachments ride along with their user turn. Binaries (images/PDFs)
+        # are replayed only for turns inside the recent window — resending
+        # every screenshot of a long build would balloon the prompt; older
+        # turns get a text note naming what was attached. Messages without
+        # attachments keep the exact string content they always had.
+        selected = _select_history_messages(history, window)
+        tail_ids = {m.id for m in history[-window:]}
+        att_by_msg = await self._attachments_for_messages(
+            db, [m.id for m in selected if m.role == "user"], with_data_for=tail_ids)
+        for msg in selected:
+            atts = att_by_msg.get(msg.id) if msg.role == "user" else None
+            if atts:
+                messages.append({"role": msg.role,
+                                 "content": build_user_content(msg.content, atts)})
+            else:
+                messages.append({"role": msg.role, "content": msg.content})
 
         # Check if the latest user message is a wizard request — augment prompt
         if history and is_wizard_request(history[-1].content):
             messages.insert(1, {"role": "system", "content": await prompt_registry.resolve(db, "wizard_generation_prompt")})
 
         return messages
+
+    async def _load_pending_attachments(self, db: AsyncSession, attachment_ids, app_id: str, user_id: str | None):
+        """Rows for the given ids that are still unbound (message_id NULL) and
+        belong to this user + app. Order follows the ids the client sent."""
+        ids = [str(i) for i in (attachment_ids or []) if i]
+        if not ids:
+            return []
+        from ..apps.models import MessageAttachment
+        rows = (await db.execute(
+            select(MessageAttachment).where(
+                MessageAttachment.id.in_(ids),
+                MessageAttachment.app_id == app_id,
+                MessageAttachment.message_id.is_(None),
+                *( [MessageAttachment.user_id == user_id] if user_id else [] ),
+            )
+        )).scalars().all()
+        by_id = {r.id: r for r in rows}
+        return [by_id[i] for i in dict.fromkeys(ids) if i in by_id]
+
+    async def _attachments_for_messages(self, db: AsyncSession, message_ids: list[str],
+                                        with_data_for: set[str]) -> dict[str, list]:
+        """{message_id: [attachment-like]} for the given user messages. Rows in
+        `with_data_for` carry their bytes; the rest are metadata-only stand-ins
+        (data=None) so build_user_content emits an omitted-note instead."""
+        from types import SimpleNamespace
+        from ..apps.models import MessageAttachment
+        out: dict[str, list] = {}
+        if not message_ids:
+            return out
+        full_ids = [m for m in message_ids if m in with_data_for]
+        meta_ids = [m for m in message_ids if m not in with_data_for]
+        if full_ids:
+            rows = (await db.execute(
+                select(MessageAttachment).where(MessageAttachment.message_id.in_(full_ids))
+                .order_by(MessageAttachment.created_at)
+            )).scalars().all()
+            for r in rows:
+                out.setdefault(r.message_id, []).append(r)
+        if meta_ids:
+            rows = (await db.execute(
+                select(MessageAttachment.id, MessageAttachment.message_id, MessageAttachment.filename,
+                       MessageAttachment.mime, MessageAttachment.kind, MessageAttachment.size)
+                .where(MessageAttachment.message_id.in_(meta_ids))
+                .order_by(MessageAttachment.created_at)
+            )).all()
+            for r in rows:
+                out.setdefault(r.message_id, []).append(SimpleNamespace(
+                    id=r.id, filename=r.filename, mime=r.mime, kind=r.kind, size=r.size, data=None))
+        return out
 
     def _read_current_files(self, app_dir: Path) -> str:
         """Read current app files for context. Walks src/ (the UI) and server/

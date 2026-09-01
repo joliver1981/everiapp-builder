@@ -388,6 +388,7 @@ export function AppBuilderPage() {
             role: m.role,
             content: m.content,
             codeRefs: m.code_refs?.length ? m.code_refs : undefined,
+            attachments: m.attachments?.length ? m.attachments : undefined,
             timestamp: m.timestamp,
           }))
           loadHistory(msgs, data.conversation_id)

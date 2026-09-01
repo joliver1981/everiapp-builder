@@ -72,6 +72,19 @@ export interface PublishRequest {
 }
 
 // Chat types
+// A file attached to a user chat message (screenshot, image, PDF, text file).
+// Mirrors the metadata GET /api/ai/conversations/{app} returns — never the bytes.
+export interface ChatAttachment {
+  id: string
+  name: string
+  mime: string
+  kind: 'image' | 'pdf' | 'text'
+  size: number
+  // Object URL of the file attached in THIS session, so the bubble thumbnail
+  // needn't re-download it. Absent for messages reloaded from history.
+  localUrl?: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -80,6 +93,8 @@ export interface ChatMessage {
   // Code locations the AI pointed at this turn (from [[jump:...]] directives) — rendered
   // as clickable "jump to code" chips under the message.
   codeRefs?: CodeRef[]
+  // Files the user attached to this message (user role only).
+  attachments?: ChatAttachment[]
   timestamp: string
 }
 
