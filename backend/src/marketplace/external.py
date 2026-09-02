@@ -69,6 +69,13 @@ async def _resolve_credentials(db: AsyncSession, *, need_key: bool = True) -> tu
     return url, key
 
 
+def _key_headers(api_key: str) -> dict[str, str]:
+    """Identify this server to the marketplace on READ calls too. With a key,
+    the marketplace also returns apps shared privately with this account's
+    groups; without one, reads are anonymous (public apps only) as before."""
+    return {"X-API-Key": api_key} if api_key else {}
+
+
 # ---------------------------------------------------------------- screenshots
 
 async def capture_screenshots(app_id: str) -> list[bytes]:
@@ -186,13 +193,24 @@ async def publish_app(
     capture_shots: bool = True,
     marketplace_url: str | None = None,
     marketplace_api_key: str | None = None,
+    visibility: str | None = None,
+    share_to_groups: list[str] | None = None,
 ) -> dict:
-    """Run the full publish pipeline. Returns {url, slug, version}."""
+    """Run the full publish pipeline. Returns {url, slug, version, audience...}.
+
+    Audience: `visibility` is "public" or "private"; `share_to_groups` lists
+    marketplace group slugs a private app is shared with. Both are optional —
+    when omitted, the marketplace keeps an existing listing's audience
+    unchanged (and defaults a brand-new listing to public).
+    """
     from .semver import is_valid_semver
     if marketplace_url and marketplace_api_key:
         base_url, api_key = marketplace_url.rstrip("/"), marketplace_api_key
     else:
         base_url, api_key = await _resolve_credentials(db)
+
+    if visibility not in (None, "public", "private"):
+        raise MarketplaceError("visibility must be 'public' or 'private'")
 
     app = (await db.execute(select(App).where(App.id == app_id))).scalar_one_or_none()
     if not app:
@@ -224,11 +242,21 @@ async def publish_app(
     # time. These are properties of the LISTING (not a version), so they should
     # stay consistent across publishes rather than resetting every time.
     effective_short = short_description or (app.description or app.name)[:300]
+    previous_listing = app.marketplace_listing or {}
     app.marketplace_listing = {
         "short_description": effective_short,
         "category": category,
         "tags": tags or [],
         "license": license,
+        # The audience is sticky so the dialog pre-selects it next time. An
+        # omitted value means the marketplace leaves the listing's audience
+        # alone, so the remembered value stays what it was.
+        "visibility": visibility or previous_listing.get("visibility"),
+        "share_to_groups": (
+            [] if visibility == "public"
+            else share_to_groups if share_to_groups is not None
+            else previous_listing.get("share_to_groups") or []
+        ),
     }
 
     # 1. Package
@@ -284,6 +312,12 @@ async def publish_app(
             "setupInstructions": app.setup_instructions or "",
             "screenshots": screenshot_payload,
         }
+        # Audience fields go only when chosen: an omitted visibility tells the
+        # marketplace to leave an existing listing's audience unchanged.
+        if visibility is not None:
+            payload["visibility"] = visibility
+        if share_to_groups is not None and visibility != "public":
+            payload["shareToGroups"] = share_to_groups
         resp = await client.post(
             f"{base_url}/api/publish",
             json=payload,
@@ -297,25 +331,43 @@ async def publish_app(
 
     # 5. Persist listing identity + the semver we just shipped (seeds the next
     # publish's bump buttons + downgrade guard) + audit.
-    returned_slug = data.get("app", {}).get("slug", slug)
+    remote_app = data.get("app") or {}
+    returned_slug = remote_app.get("slug", slug)
     app.marketplace_slug = returned_slug
     app.last_published_version = publish_semver
+
+    # What the marketplace actually recorded is authoritative over what we
+    # asked for (an older marketplace ignores the audience fields entirely).
+    returned_visibility = remote_app.get("visibility")
+    shared_with = [g for g in (remote_app.get("sharedWith") or []) if isinstance(g, dict)]
+    audience = remote_app.get("audience")
+    if returned_visibility in ("public", "private"):
+        app.marketplace_listing = {
+            **(app.marketplace_listing or {}),
+            "visibility": returned_visibility,
+            "share_to_groups": [g["slug"] for g in shared_with if g.get("slug")],
+        }
+
     db.add(AuditLog(
         user_id=user.id, action="app.marketplace.published",
         resource_type="app", resource_id=app_id,
         details=(f"Published {publish_semver} (snapshot v{target_version}) to {base_url} "
                  f"as '{returned_slug}' ({len(zip_bytes)} bytes, "
-                 f"{len(screenshot_payload)} screenshot(s))"),
+                 f"{len(screenshot_payload)} screenshot(s)); "
+                 f"audience: {audience or returned_visibility or 'unchanged'}"),
     ))
     await db.commit()
 
     return {
         "message": data.get("message", "Published successfully!"),
-        "marketplace_url": data.get("app", {}).get("url", f"{base_url}/apps/{returned_slug}"),
+        "marketplace_url": remote_app.get("url", f"{base_url}/apps/{returned_slug}"),
         "slug": returned_slug,
         "version": target_version,
         "version_semver": publish_semver,
         "screenshots": len(screenshot_payload),
+        "visibility": returned_visibility,
+        "shared_with": [{"slug": g.get("slug"), "name": g.get("name")} for g in shared_with],
+        "audience": audience,
     }
 
 
@@ -334,12 +386,14 @@ async def remote_published_versions(db: AsyncSession, app_id: str) -> dict:
     slug = app.marketplace_slug or slugify(app.name)
     empty = {"slug": slug, "versions": [], "current": ""}
     try:
-        base_url, _ = await _resolve_credentials(db, need_key=False)
+        base_url, api_key = await _resolve_credentials(db, need_key=False)
     except MarketplaceError:
         return empty
     async with _make_client() as client:
         try:
-            resp = await client.get(f"{base_url}/api/apps/{slug}/versions")
+            resp = await client.get(
+                f"{base_url}/api/apps/{slug}/versions", headers=_key_headers(api_key),
+            )
         except httpx.HTTPError:
             return empty
     if resp.status_code != 200:
@@ -356,8 +410,10 @@ async def browse_remote(
     db: AsyncSession, *, q: str = "", category: str = "",
     sort: str = "popular", page: int = 1,
 ) -> dict:
-    """Proxy the marketplace's public app search (no API key needed)."""
-    base_url, _ = await _resolve_credentials(db, need_key=False)
+    """Proxy the marketplace's app search. Works without an API key (public
+    apps); with one, private apps shared with this account's groups appear
+    too, each carrying `visibility` and `sharedGroups`."""
+    base_url, api_key = await _resolve_credentials(db, need_key=False)
     params: dict = {"sort": sort, "page": page, "limit": 24}
     if q:
         params["q"] = q
@@ -365,9 +421,16 @@ async def browse_remote(
         params["category"] = category
     async with _make_client() as client:
         try:
-            resp = await client.get(f"{base_url}/api/apps", params=params)
+            resp = await client.get(
+                f"{base_url}/api/apps", params=params, headers=_key_headers(api_key),
+            )
         except httpx.HTTPError as e:
             raise MarketplaceError(f"Could not reach the marketplace at {base_url}: {e}")
+    if resp.status_code in (401, 403):
+        raise MarketplaceError(
+            f"The marketplace rejected this server's API key ({resp.status_code}): "
+            f"{_error_detail(resp)}. Check Platform → Settings → EveriApp Marketplace."
+        )
     if resp.status_code != 200:
         raise MarketplaceError(f"Marketplace returned {resp.status_code}")
     data = resp.json()
@@ -375,12 +438,55 @@ async def browse_remote(
     return data
 
 
+async def list_remote_groups(db: AsyncSession) -> dict:
+    """Groups this server's marketplace account belongs to — what a publish
+    can be shared with.
+
+    Returns {supported, groups, reason}. `supported` is False (with a reason)
+    when no key is configured, the marketplace predates groups (404), or the
+    key is rejected; the publish dialog then offers "Public" only.
+    """
+    try:
+        base_url, api_key = await _resolve_credentials(db, need_key=False)
+    except MarketplaceError:
+        return {"supported": False, "groups": [], "reason": "not_configured"}
+    if not api_key:
+        return {"supported": False, "groups": [], "reason": "no_key"}
+    async with _make_client() as client:
+        try:
+            resp = await client.get(
+                f"{base_url}/api/developer/groups", headers=_key_headers(api_key),
+            )
+        except httpx.HTTPError as e:
+            return {"supported": False, "groups": [], "reason": f"unreachable: {e}"}
+    if resp.status_code == 404:
+        return {"supported": False, "groups": [], "reason": "marketplace_predates_groups"}
+    if resp.status_code in (401, 403):
+        return {"supported": False, "groups": [], "reason": "invalid_key"}
+    if resp.status_code != 200:
+        return {"supported": False, "groups": [], "reason": f"marketplace returned {resp.status_code}"}
+    groups = [
+        {
+            "slug": g.get("slug"),
+            "name": g.get("name") or g.get("slug"),
+            "role": g.get("role"),
+            "member_count": g.get("memberCount"),
+        }
+        for g in (resp.json().get("groups") or [])
+        if isinstance(g, dict) and g.get("slug")
+    ]
+    return {"supported": True, "groups": groups, "reason": None}
+
+
 async def install_remote(
     db: AsyncSession, user_id: str, *, slug: str,
     version: str | None = None, wizard_values: dict | None = None,
 ) -> App:
-    """Download an app package from the marketplace and import it as a new app."""
-    base_url, _ = await _resolve_credentials(db, need_key=False)
+    """Download an app package from the marketplace and import it as a new app.
+
+    The API key rides along when configured so privately shared apps can be
+    installed; the marketplace records the download against the account."""
+    base_url, api_key = await _resolve_credentials(db, need_key=False)
     params = {"client_id": "aihub-builder"}
     if version:
         params["version"] = version
@@ -388,7 +494,7 @@ async def install_remote(
         try:
             resp = await client.get(
                 f"{base_url}/api/apps/{slug}/download",
-                params=params, follow_redirects=True,
+                params=params, follow_redirects=True, headers=_key_headers(api_key),
             )
         except httpx.HTTPError as e:
             raise MarketplaceError(f"Download failed: {e}")

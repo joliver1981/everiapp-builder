@@ -4,7 +4,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { apiClient, ApiError } from '@/api/client'
 import {
   Search, Download, Tag, Loader2,
-  Package, Star, X, Globe, Server,
+  Package, Star, X, Globe, Server, Lock,
 } from 'lucide-react'
 import { SetupWizardRenderer, type WizardSchema } from '@/components/wizard/SetupWizardRenderer'
 import { cn } from '@/lib/utils'
@@ -38,6 +38,10 @@ interface RemoteApp {
   reviewCount: number
   installCount: number
   setupWizard?: WizardSchema | null
+  // Private apps appear only because this server's marketplace account (or a
+  // group it belongs to) may see them.
+  visibility?: 'public' | 'private'
+  sharedGroups?: { slug: string; name: string }[]
 }
 
 interface RemoteBrowseResponse {
@@ -359,16 +363,36 @@ function RemoteGallery() {
                       <p className="text-xs text-muted-foreground">by {app.developerName}</p>
                     </div>
                   </div>
-                  {app.currentVersion && (
-                    <span className="rounded bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                      v{app.currentVersion}
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {app.visibility === 'private' && (
+                      <span
+                        className="flex items-center gap-1 rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                        title={
+                          app.sharedGroups?.length
+                            ? `Shared privately with ${app.sharedGroups.map((g) => g.name).join(', ')}`
+                            : 'Private — visible only to your marketplace account'
+                        }
+                      >
+                        <Lock size={9} />
+                        Private
+                      </span>
+                    )}
+                    {app.currentVersion && (
+                      <span className="rounded bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                        v{app.currentVersion}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <p className="mt-3 flex-1 text-xs text-muted-foreground line-clamp-2">
                   {app.shortDescription || 'No description'}
                 </p>
+                {app.visibility === 'private' && app.sharedGroups && app.sharedGroups.length > 0 && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Shared with {app.sharedGroups.map((g) => g.name).join(', ')}
+                  </p>
+                )}
 
                 <div className="mt-3 flex flex-wrap gap-1">
                   {(app.tags || []).slice(0, 3).map((tag) => (

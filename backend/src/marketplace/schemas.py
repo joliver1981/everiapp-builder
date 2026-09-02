@@ -65,6 +65,11 @@ class ExternalPublishRequest(BaseModel):
     capture_screenshots: bool = True
     marketplace_url: str | None = None
     marketplace_api_key: str | None = None
+    # Audience: "public" | "private". None = leave an existing listing's
+    # audience unchanged (a brand-new listing defaults to public).
+    visibility: str | None = None
+    # Marketplace group slugs a private app is shared with.
+    share_to_groups: list[str] | None = None
 
 
 class SuggestMetadataRequest(BaseModel):

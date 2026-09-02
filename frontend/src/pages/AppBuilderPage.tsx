@@ -37,6 +37,9 @@ import {
   Activity,
   LocateFixed,
   MessageSquarePlus,
+  Globe,
+  Lock,
+  Users,
 } from 'lucide-react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { CodeEditor, type EditorSelectionContext } from '@/components/editor/CodeEditor'
@@ -271,9 +274,17 @@ export function AppBuilderPage() {
   const [isSuggesting, setIsSuggesting] = useState(false)
   const [suggestError, setSuggestError] = useState<string | null>(null)
   const [marketplaceShots, setMarketplaceShots] = useState(true)
-  const [marketplaceResult, setMarketplaceResult] = useState<{ message: string; url: string } | null>(null)
+  const [marketplaceResult, setMarketplaceResult] = useState<{ message: string; url: string; audience?: string } | null>(null)
   const [marketplaceConfig, setMarketplaceConfig] = useState<{
     configured: boolean; url_configured: boolean; key_configured: boolean; marketplace_url: string
+  } | null>(null)
+  // Audience: who can see the listing. Pre-selected from the last publish so a
+  // private app stays private unless the developer deliberately changes it.
+  const [marketplaceVisibility, setMarketplaceVisibility] = useState<'public' | 'private'>('public')
+  const [marketplaceShareGroups, setMarketplaceShareGroups] = useState<string[]>([])
+  // Groups this server's marketplace account belongs to (null = loading).
+  const [marketplaceGroups, setMarketplaceGroups] = useState<{
+    supported: boolean; groups: { slug: string; name: string; role: string }[]; reason: string | null
   } | null>(null)
 
   // When the Publish-to-Marketplace dialog opens, check whether external publishing
@@ -300,6 +311,15 @@ export function AppBuilderPage() {
     setMarketplaceCategory(listing.category || 'general')
     setMarketplaceTags((listing.tags || []).join(', '))
     setMarketplaceLicense(listing.license || 'MIT')
+    setMarketplaceVisibility(listing.visibility === 'private' ? 'private' : 'public')
+    setMarketplaceShareGroups(listing.share_to_groups || [])
+    setMarketplaceGroups(null)
+    apiClient
+      .get<{ supported: boolean; groups: { slug: string; name: string; role: string }[]; reason: string | null }>(
+        '/marketplace/remote/groups',
+      )
+      .then(setMarketplaceGroups)
+      .catch(() => setMarketplaceGroups({ supported: false, groups: [], reason: 'unreachable' }))
     // Release notes are per-version — always start fresh.
     setMarketplaceNotes('')
     // Provisional seed from the local field; the effect below re-seeds off the
@@ -679,6 +699,23 @@ export function AppBuilderPage() {
 
   const handlePublishToMarketplace = async () => {
     if (!currentApp) return
+    // Changing a listing's audience is a deliberate act: widening it exposes
+    // an app that was private, narrowing it pulls a public listing.
+    const previousVisibility = currentApp.marketplace_listing?.visibility
+    const previouslyPublished = Boolean(currentApp.last_published_version)
+    if (previousVisibility === 'private' && marketplaceVisibility === 'public') {
+      const ok = window.confirm(
+        `"${currentApp.name}" is currently visible only to you and the groups it's shared with. ` +
+          'Publishing as Public makes it visible to everyone on the marketplace. Continue?',
+      )
+      if (!ok) return
+    } else if (previouslyPublished && previousVisibility !== 'private' && marketplaceVisibility === 'private') {
+      const ok = window.confirm(
+        `"${currentApp.name}" is currently listed publicly. Publishing as Private removes it from the public ` +
+          'marketplace; anyone who already installed it keeps their copy. Continue?',
+      )
+      if (!ok) return
+    }
     setIsPublishingToMarketplace(true)
     setMarketplaceResult(null)
     try {
@@ -696,10 +733,15 @@ export function AppBuilderPage() {
         version: marketplaceVersion,
         version_semver: marketplaceSemver,
         capture_screenshots: marketplaceShots,
+        // Always explicit — the builder never leans on the marketplace's
+        // "leave it unchanged" default for a listing it knows about.
+        visibility: marketplaceVisibility,
+        share_to_groups: marketplaceVisibility === 'private' ? marketplaceShareGroups : [],
       })
       setMarketplaceResult({
         message: result.message,
         url: result.marketplace_url || '',
+        audience: result.audience || undefined,
       })
       // Reflect the just-shipped release so a repeat publish this session bumps
       // from it (last_published_version was stale until the app is refetched).
@@ -1783,6 +1825,12 @@ export function AppBuilderPage() {
                   marketplaceResult.url ? 'bg-green-500/10 text-green-700 dark:text-green-300' : 'bg-red-500/10 text-red-700 dark:text-red-300'
                 )}>
                   <p>{marketplaceResult.message}</p>
+                  {marketplaceResult.audience && (
+                    <p className="mt-1 flex items-center gap-1.5 text-xs opacity-90">
+                      {marketplaceResult.audience.startsWith('Public') ? <Globe size={12} /> : <Lock size={12} />}
+                      Visible to: {marketplaceResult.audience}
+                    </p>
+                  )}
                   {marketplaceResult.url && (
                     <a
                       href={marketplaceResult.url}
@@ -1913,6 +1961,108 @@ export function AppBuilderPage() {
                         placeholder="dashboard, sales, reporting"
                       />
                     </div>
+                  </section>
+
+                  {/* ── Audience ────────────────────────────────────── */}
+                  <section className="space-y-3">
+                    <h3 className="border-b border-border pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Who can see it</h3>
+                    {currentApp.marketplace_listing?.visibility && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Currently: {currentApp.marketplace_listing.visibility === 'private'
+                          ? `Private${(currentApp.marketplace_listing.share_to_groups || []).length
+                              ? ` · shared with ${(currentApp.marketplace_listing.share_to_groups || []).join(', ')}`
+                              : ' · only you'}`
+                          : 'Public'}
+                      </p>
+                    )}
+                    <div className="grid grid-cols-2 gap-3">
+                      <label
+                        className={cn(
+                          'flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm transition-colors',
+                          marketplaceVisibility === 'public' ? 'border-primary bg-primary/5' : 'border-input hover:bg-accent',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="marketplace-visibility"
+                          className="mt-0.5"
+                          checked={marketplaceVisibility === 'public'}
+                          onChange={() => setMarketplaceVisibility('public')}
+                        />
+                        <span>
+                          <span className="flex items-center gap-1.5 font-medium"><Globe size={13} /> Public</span>
+                          <span className="mt-0.5 block text-xs text-muted-foreground">
+                            Anyone on the marketplace can find and install this app.
+                          </span>
+                        </span>
+                      </label>
+                      <label
+                        className={cn(
+                          'flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm transition-colors',
+                          marketplaceVisibility === 'private' ? 'border-primary bg-primary/5' : 'border-input hover:bg-accent',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="marketplace-visibility"
+                          className="mt-0.5"
+                          checked={marketplaceVisibility === 'private'}
+                          onChange={() => setMarketplaceVisibility('private')}
+                        />
+                        <span>
+                          <span className="flex items-center gap-1.5 font-medium"><Lock size={13} /> Private</span>
+                          <span className="mt-0.5 block text-xs text-muted-foreground">
+                            Only you and the groups you pick. Invisible to everyone else.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                    {marketplaceVisibility === 'private' && (
+                      <div className="rounded-lg border border-input bg-secondary/40 p-3">
+                        <p className="mb-2 text-xs font-medium text-muted-foreground">Share with groups</p>
+                        {marketplaceGroups === null ? (
+                          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Loader2 size={12} className="animate-spin" /> Loading your groups…
+                          </p>
+                        ) : !marketplaceGroups.supported ? (
+                          <p className="text-xs text-muted-foreground">
+                            {marketplaceGroups.reason === 'no_key' || marketplaceGroups.reason === 'not_configured'
+                              ? 'Group sharing needs a marketplace API key under Platform → Settings. Without one the app will be visible only to you.'
+                              : marketplaceGroups.reason === 'marketplace_predates_groups'
+                                ? 'This marketplace doesn’t support groups yet. The app will be visible only to you.'
+                                : marketplaceGroups.reason === 'invalid_key'
+                                  ? 'The marketplace rejected this server’s API key — check Platform → Settings. The app will be visible only to you.'
+                                  : 'Couldn’t load your groups from the marketplace. The app will be visible only to you.'}
+                          </p>
+                        ) : marketplaceGroups.groups.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">
+                            You&apos;re not in any groups yet — create or join one on the marketplace under Groups. Until then the app will be visible only to you.
+                          </p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {marketplaceGroups.groups.map((g) => (
+                              <label key={g.slug} className="flex cursor-pointer items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={marketplaceShareGroups.includes(g.slug)}
+                                  onChange={(e) =>
+                                    setMarketplaceShareGroups((prev) =>
+                                      e.target.checked ? [...prev, g.slug] : prev.filter((s) => s !== g.slug),
+                                    )
+                                  }
+                                />
+                                <Users size={13} className="text-muted-foreground" />
+                                {g.name}
+                                {g.role === 'owner' && <span className="text-[10px] text-muted-foreground">(owner)</span>}
+                              </label>
+                            ))}
+                            {marketplaceShareGroups.length === 0 && (
+                              <p className="text-[11px] text-muted-foreground">No group selected — the app will be visible only to you.</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </section>
 
                   {/* ── Version & release ───────────────────────────── */}

@@ -39,7 +39,19 @@ from src.marketplace import external  # noqa: E402
 MP = "https://mp.test"
 
 # Shared fake-marketplace state
-FAKE: dict = {"blobs": {}, "published": []}
+FAKE: dict = {
+    "blobs": {}, "published": [],
+    # Set to False to impersonate a marketplace that predates groups.
+    "groups_supported": True,
+    # Headers seen on the last read call, keyed by path — to assert the
+    # builder sends (or doesn't send) X-API-Key on reads.
+    "read_headers": {},
+}
+
+FAKE_GROUPS = [
+    {"slug": "roundtable", "name": "Roundtable", "role": "member", "memberCount": 4},
+    {"slug": "my-team", "name": "My Team", "role": "owner", "memberCount": 1},
+]
 
 
 def _fake_handler(request: httpx.Request) -> httpx.Response:
@@ -50,6 +62,16 @@ def _fake_handler(request: httpx.Request) -> httpx.Response:
 
     if url.host != "mp.test":
         return httpx.Response(404, json={"error": f"unexpected host {url.host}"})
+
+    if request.method == "GET":
+        FAKE["read_headers"][url.path] = {k.lower(): v for k, v in request.headers.items()}
+
+    if url.path == "/api/developer/groups" and request.method == "GET":
+        if not FAKE["groups_supported"]:
+            return httpx.Response(404, json={"error": "Not found"})
+        if request.headers.get("X-API-Key") != "aihub_fake_key":
+            return httpx.Response(401, json={"error": "Invalid API key."})
+        return httpx.Response(200, json={"groups": FAKE_GROUPS})
 
     if url.path == "/api/publish/upload-url" and request.method == "POST":
         if request.headers.get("X-API-Key") != "aihub_fake_key":
@@ -67,11 +89,30 @@ def _fake_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, json={"error": "Invalid API key."})
         payload = json.loads(request.content)
         FAKE["published"].append(payload)
+        # Mirror the real marketplace's audience rules: omitted visibility
+        # keeps the listing's previous audience (public for a new listing).
+        prior = [p for p in FAKE["published"][:-1] if p["slug"] == payload["slug"]]
+        prev_vis = prior[-1].get("_visibility", "public") if prior else "public"
+        prev_groups = prior[-1].get("_groups", []) if prior else []
+        visibility = payload.get("visibility") or prev_vis
+        if visibility == "public":
+            groups = []
+        elif "shareToGroups" in payload:
+            groups = payload["shareToGroups"]
+        else:
+            groups = prev_groups
+        payload["_visibility"], payload["_groups"] = visibility, groups
+        shared_with = [{"slug": g, "name": g.replace("-", " ").title()} for g in groups]
+        audience = ("Public" if visibility == "public"
+                    else f"Private · shared with {', '.join(s['name'] for s in shared_with)}"
+                    if shared_with else "Private · only you")
         return httpx.Response(200, json={
             "message": f"App \"{payload['name']}\" published successfully!",
             "app": {"slug": payload["slug"], "name": payload["name"],
                     "version": payload["version"],
-                    "url": f"{MP}/apps/{payload['slug']}"},
+                    "url": f"{MP}/apps/{payload['slug']}",
+                    "visibility": visibility, "sharedWith": shared_with,
+                    "audience": audience},
         })
 
     if url.path == "/api/apps" and request.method == "GET":
@@ -84,6 +125,8 @@ def _fake_handler(request: httpx.Request) -> httpx.Response:
             "avgRating": "0.00", "reviewCount": 0, "installCount": 3,
             "isFeatured": False, "publishedAt": "2026-06-12T00:00:00Z",
             "setupWizard": p.get("setupWizard"),
+            "visibility": p.get("_visibility", "public"),
+            "sharedGroups": [{"slug": g, "name": g.title()} for g in p.get("_groups", [])],
         } for p in FAKE["published"]
             if not q or q.lower() in p["name"].lower()]
         return httpx.Response(200, json={
@@ -516,3 +559,141 @@ def test_listing_metadata_persists_for_prefill(client, token, configured):
     assert listing["category"] == "productivity"
     assert listing["tags"] == ["standup", "scrum"]
     assert listing["license"] == "Apache-2.0"
+
+
+# ---- Group Sharing: audience on publish, API key on reads ----
+
+def _new_versioned_app(client, token, name):
+    r = client.post("/api/apps", json={"name": name}, headers=_auth(token))
+    app_id = r.json()["id"]
+    draft = Path(settings.app_data_dir) / app_id / "draft" / "frontend"
+    (draft / "src").mkdir(parents=True, exist_ok=True)
+    (draft / "src" / "x.ts").write_text("export const X = 1\n")
+    r = client.post(f"/api/apps/{app_id}/versions", json={"notes": "v1"}, headers=_auth(token))
+    assert r.status_code == 201, r.text
+    return app_id
+
+
+def test_remote_groups_lists_the_accounts_groups(client, token, configured):
+    """The publish dialog asks which groups this server's key can share with."""
+    FAKE["groups_supported"] = True
+    r = client.get("/api/marketplace/remote/groups", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["supported"] is True
+    assert [g["slug"] for g in body["groups"]] == ["roundtable", "my-team"]
+    assert body["groups"][1]["role"] == "owner"
+    assert body["groups"][0]["member_count"] == 4
+
+
+def test_remote_groups_degrades_against_an_older_marketplace(client, token, configured):
+    """A marketplace that predates groups → 'Public only', never an error."""
+    FAKE["groups_supported"] = False
+    try:
+        r = client.get("/api/marketplace/remote/groups", headers=_auth(token))
+        assert r.status_code == 200, r.text
+        assert r.json() == {"supported": False, "groups": [],
+                            "reason": "marketplace_predates_groups"}
+    finally:
+        FAKE["groups_supported"] = True
+
+
+def test_publish_private_to_group_sends_audience_and_remembers_it(client, token, configured):
+    app_id = _new_versioned_app(client, token, "Private Group App")
+    r = client.post("/api/marketplace/publish-external", json={
+        "app_id": app_id, "version_semver": "1.0.0", "capture_screenshots": False,
+        "visibility": "private", "share_to_groups": ["roundtable"],
+    }, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["visibility"] == "private"
+    assert body["shared_with"] == [{"slug": "roundtable", "name": "Roundtable"}]
+    assert body["audience"] == "Private · shared with Roundtable"
+
+    payload = FAKE["published"][-1]
+    assert payload["visibility"] == "private"
+    assert payload["shareToGroups"] == ["roundtable"]
+
+    # Sticky: the dialog pre-selects this audience next time.
+    listing = client.get(f"/api/apps/{app_id}", headers=_auth(token)).json()["marketplace_listing"]
+    assert listing["visibility"] == "private"
+    assert listing["share_to_groups"] == ["roundtable"]
+
+
+def test_publish_without_audience_omits_the_fields(client, token, configured):
+    """No audience chosen → the fields are absent from the payload, so the
+    marketplace keeps an existing listing's audience (never flips it)."""
+    app_id = _new_versioned_app(client, token, "Omitted Audience App")
+    r = client.post("/api/marketplace/publish-external", json={
+        "app_id": app_id, "version_semver": "1.0.0", "capture_screenshots": False,
+    }, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    payload = FAKE["published"][-1]
+    assert "visibility" not in payload
+    assert "shareToGroups" not in payload
+    # The fake (like the real marketplace) defaulted a new listing to public,
+    # and the builder recorded what the marketplace reported.
+    assert r.json()["visibility"] == "public"
+    listing = client.get(f"/api/apps/{app_id}", headers=_auth(token)).json()["marketplace_listing"]
+    assert listing["visibility"] == "public"
+
+
+def test_publish_flip_to_public_clears_remembered_groups(client, token, configured):
+    app_id = _new_versioned_app(client, token, "Flip App")
+    client.post("/api/marketplace/publish-external", json={
+        "app_id": app_id, "version_semver": "1.0.0", "capture_screenshots": False,
+        "visibility": "private", "share_to_groups": ["roundtable", "my-team"],
+    }, headers=_auth(token))
+    r = client.post("/api/marketplace/publish-external", json={
+        "app_id": app_id, "version_semver": "1.1.0", "capture_screenshots": False,
+        "visibility": "public", "share_to_groups": ["roundtable"],  # ignored for public
+    }, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["audience"] == "Public"
+    assert "shareToGroups" not in FAKE["published"][-1]
+    listing = client.get(f"/api/apps/{app_id}", headers=_auth(token)).json()["marketplace_listing"]
+    assert listing["visibility"] == "public"
+    assert listing["share_to_groups"] == []
+
+
+def test_publish_rejects_unknown_visibility(client, token, configured):
+    app_id = _new_versioned_app(client, token, "Bad Visibility App")
+    r = client.post("/api/marketplace/publish-external", json={
+        "app_id": app_id, "capture_screenshots": False, "visibility": "friends",
+    }, headers=_auth(token))
+    assert r.status_code == 400
+    assert "visibility" in r.json()["detail"]
+
+
+def test_reads_send_api_key_when_configured(client, token, configured):
+    """Browse, versions, and download all identify this server, so privately
+    shared apps show up and installs are recorded against the account."""
+    FAKE["read_headers"].clear()
+    r = client.get("/api/marketplace/remote?q=pipe", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert FAKE["read_headers"]["/api/apps"]["x-api-key"] == "aihub_fake_key"
+    # Private apps carry their audience through the proxy untouched.
+    private = [a for a in r.json()["apps"] if a["visibility"] == "private"]
+    assert all("sharedGroups" in a for a in private)
+
+    r = client.post("/api/marketplace/remote/install", json={"slug": "remote-pipe-app"},
+                    headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert FAKE["read_headers"]["/api/apps/remote-pipe-app/download"]["x-api-key"] == "aihub_fake_key"
+
+
+def test_reads_stay_anonymous_without_a_key(client, token, configured):
+    """No key configured → no header at all (old behavior, public apps only)."""
+    r = client.put("/api/admin/settings", json={"marketplace_api_key": ""}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    try:
+        FAKE["read_headers"].clear()
+        r = client.get("/api/marketplace/remote", headers=_auth(token))
+        assert r.status_code == 200, r.text
+        assert "x-api-key" not in FAKE["read_headers"]["/api/apps"]
+        r = client.get("/api/marketplace/remote/groups", headers=_auth(token))
+        assert r.json() == {"supported": False, "groups": [], "reason": "no_key"}
+    finally:
+        r = client.put("/api/admin/settings", json={"marketplace_api_key": "aihub_fake_key"},
+                       headers=_auth(token))
+        assert r.status_code == 200, r.text

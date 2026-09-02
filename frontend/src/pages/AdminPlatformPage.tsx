@@ -904,11 +904,11 @@ function SettingsTab() {
       </Section>
 
       <Section title="EveriApp Marketplace (external)">
-        <Labeled label="Marketplace URL" hint="the public marketplace this server publishes to and browses, e.g. https://aihub-marketplace.vercel.app">
+        <Labeled label="Marketplace URL" hint="the EveriApp Marketplace this server publishes to and browses (the platform license permits marketplaces operated by EveriAI only), e.g. https://aihub-marketplace.vercel.app">
           <input value={settings.marketplace_url || ''} onChange={(e) => set({ marketplace_url: e.target.value })}
                  placeholder="https://aihub-marketplace.vercel.app" className={inputCls} />
         </Labeled>
-        <Labeled label="Developer API key" hint="from the marketplace's Developer page; required for publishing (browse works without it)">
+        <Labeled label="Developer API key" hint="from the marketplace's Developer page; required for publishing and for seeing apps shared privately with your groups (public browsing works without it)">
           <input type="password" value={settings.marketplace_api_key || ''}
                  onChange={(e) => set({ marketplace_api_key: e.target.value })} className={inputCls} />
         </Labeled>

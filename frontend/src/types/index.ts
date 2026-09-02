@@ -39,6 +39,9 @@ export interface App {
     category?: string
     tags?: string[]
     license?: string
+    // Audience the listing was last published with (sticky across publishes).
+    visibility?: 'public' | 'private'
+    share_to_groups?: string[]
   } | null
   created_by: string
   created_at: string

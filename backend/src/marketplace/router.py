@@ -56,11 +56,23 @@ async def browse_remote_marketplace(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Proxy the external marketplace's public app search."""
+    """Proxy the external marketplace's app search (public apps, plus apps
+    shared privately with this server's marketplace account)."""
     try:
         return await external.browse_remote(db, q=q, category=category, sort=sort, page=page)
     except external.MarketplaceError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/remote/groups")
+async def remote_groups(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_role("admin", "developer")),
+):
+    """Groups this server's marketplace account belongs to — the audiences a
+    publish can be shared with. Never errors: `supported: false` + a reason
+    when groups aren't available (no key, old marketplace, bad key)."""
+    return await external.list_remote_groups(db)
 
 
 # NOTE: declared before GET /{listing_id} so "published-versions" isn't captured as an id.
@@ -186,6 +198,8 @@ async def publish_to_external_marketplace(
             capture_shots=body.capture_screenshots,
             marketplace_url=body.marketplace_url,
             marketplace_api_key=body.marketplace_api_key,
+            visibility=body.visibility,
+            share_to_groups=body.share_to_groups,
         )
     except external.MarketplaceError as e:
         raise HTTPException(status_code=400, detail=str(e))
