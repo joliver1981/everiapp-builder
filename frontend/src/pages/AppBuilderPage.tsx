@@ -40,7 +40,9 @@ import {
   Globe,
   Lock,
   Users,
+  Braces,
 } from 'lucide-react'
+import { FunctionsPanel } from '@/components/builder/FunctionsPanel'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { CodeEditor, type EditorSelectionContext } from '@/components/editor/CodeEditor'
 import { FileTree } from '@/components/editor/FileTree'
@@ -64,7 +66,7 @@ import { apiClient, ApiError } from '@/api/client'
 import { cn } from '@/lib/utils'
 import type { PublishRequest } from '@/types'
 
-type Panel = 'chat' | 'code' | 'preview'
+type Panel = 'chat' | 'code' | 'preview' | 'functions'
 type RightPanel = 'none' | 'versions' | 'settings' | 'permissions' | 'wizard' | 'deployments' | 'data' | 'analytics' | 'live' | 'inspector'
 
 // Shape of /api/apps/{id}/runtime/status responses — includes streaming phase
@@ -1023,6 +1025,7 @@ export function AppBuilderPage() {
           {([
             { key: 'chat' as Panel, icon: MessageSquare, label: 'Chat' },
             { key: 'code' as Panel, icon: Code2, label: 'Code' },
+            { key: 'functions' as Panel, icon: Braces, label: 'Functions' },
             { key: 'preview' as Panel, icon: Eye, label: 'Preview' },
           ]).map((tab) => (
             <button
@@ -1417,7 +1420,16 @@ export function AppBuilderPage() {
                   </button>
                 </div>
 
-                <div className="relative flex-1">
+                <div className="relative flex flex-1 flex-col">
+                  {/* Platform-owned files are re-synced from the template on every
+                      preview start, so edits here silently vanish — say so. */}
+                  {activeTab && (activeTab.path === 'server/sdk.py' || activeTab.path.startsWith('src/sdk/')) && (
+                    <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+                      <Lock size={11} />
+                      Platform-owned file — it&apos;s restored from the template when the preview starts, so edits won&apos;t stick.
+                      Your code belongs in <code className="rounded bg-background/60 px-1">src/</code> and <code className="rounded bg-background/60 px-1">server/functions/</code>.
+                    </div>
+                  )}
                   {activeTab ? (
                     <CodeEditor
                       value={activeTab.content}
@@ -1439,6 +1451,15 @@ export function AppBuilderPage() {
                 </div>
               </div>
             </>
+          )}
+
+          {/* Functions panel — list / test-run / call log; editing jumps to Code */}
+          {activePanel === 'functions' && (
+            <FunctionsPanel
+              appId={currentApp.id}
+              onOpenFile={(path) => { setActivePanel('code'); handleSelectFile(path) }}
+              onAskAi={() => setActivePanel('chat')}
+            />
           )}
 
           {/* Preview panel */}

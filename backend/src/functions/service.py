@@ -51,11 +51,14 @@ _SENTINEL = "AIHUB_FN_RESULT:"
 
 
 class FunctionError(Exception):
-    """Client-correctable problem. Maps to 4xx/5xx with a fixable message."""
+    """Client-correctable problem. Maps to 4xx/5xx with a fixable message.
+    `logs` carries the function's stderr tail when the failure happened
+    inside the function (so a test run can show what it printed)."""
 
-    def __init__(self, message: str, status_code: int = 400):
+    def __init__(self, message: str, status_code: int = 400, logs: list[str] | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.logs = logs or []
 
 
 def resolve_fn_dir(app, token_payload: dict | None) -> tuple[Path, str]:
@@ -156,13 +159,21 @@ def _not_found_error(app, name: str, source: str) -> FunctionError:
 
 async def invoke_function(
     db: AsyncSession, *, app, name: str, args, token: str, base_url: str,
-    user, token_payload: dict | None,
+    user, token_payload: dict | None, trigger: str = "app",
 ) -> dict:
     """Run one server function. Returns {ok, result, logs, duration_ms}.
-    Raises FunctionError for client-correctable problems."""
+    Raises FunctionError for client-correctable problems.
+
+    `trigger` is "app" for the SDK's callFunction and "panel" for a developer
+    test run from the Functions panel; both are recorded in the call log."""
     started = time.monotonic()
     outcome = "error"
     source = "?"
+    call_ok = False
+    call_status = 200
+    call_error = ""
+    call_result = None
+    call_logs: list[str] = []
     try:
         source_dir, source = resolve_fn_dir(app, token_payload)
         if not _FN_NAME_RE.match(name or ""):
@@ -223,12 +234,13 @@ async def invoke_function(
                 f"{MAX_TIMEOUT_S}) or reduce the work per call.", status_code=504)
 
         logs = _log_tail(err_b)
+        call_logs = logs
         envelope = _parse_envelope(out_b)
         if envelope is None:
             tail = err_b.decode("utf-8", errors="replace").strip()[-300:]
             raise FunctionError(
                 f"Server function runner produced no result (exit {rc})"
-                f"{': ' + tail if tail else ''}", status_code=502)
+                f"{': ' + tail if tail else ''}", status_code=502, logs=logs)
 
         if not envelope.get("ok"):
             err = envelope.get("error") or {}
@@ -236,10 +248,13 @@ async def invoke_function(
             trace = str(err.get("trace", "")).strip()
             if trace:
                 logger.info("server fn %s/%s error trace:\n%s", app.id, name, trace)
-            raise FunctionError(f"Server function '{name}' failed: {msg}", status_code=400)
+            raise FunctionError(f"Server function '{name}' failed: {msg}",
+                                status_code=400, logs=logs)
 
         result = envelope.get("result")
         outcome = "ok"
+        call_ok = True
+        call_result = result
         return {
             "ok": True,
             "result": result,
@@ -248,6 +263,8 @@ async def invoke_function(
         }
     except FunctionError as e:
         outcome = f"{e.status_code} {str(e)[:120]}"
+        call_status = e.status_code
+        call_error = str(e)
         raise
     finally:
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -256,7 +273,222 @@ async def invoke_function(
             resource_type="app_function", resource_id=f"{app.id}/{name}",
             details=f"app={app.id} fn={name} src={source} -> {outcome} {duration_ms}ms",
         ))
+        await record_call(
+            db, app_id=app.id, fn_name=name, source=source, user_id=user.id,
+            trigger=trigger, ok=call_ok, status_code=call_status, error=call_error,
+            duration_ms=duration_ms, args=args, result=call_result, logs=call_logs,
+        )
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Call log — the Functions panel's "recent calls"
+# ---------------------------------------------------------------------------
+
+_PREVIEW_CHARS = 2000
+_LOGS_CHARS = 8 * 1024
+_CALLS_KEPT_PER_APP = 300
+
+
+def _preview(value) -> str:
+    if value is None:
+        return ""
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = str(value)
+    return text if len(text) <= _PREVIEW_CHARS else text[:_PREVIEW_CHARS] + "…"
+
+
+async def record_call(
+    db: AsyncSession, *, app_id: str, fn_name: str, source: str, user_id: str,
+    trigger: str, ok: bool, status_code: int, error: str, duration_ms: int,
+    args, result, logs: list[str],
+) -> None:
+    """Append to the per-app call log and keep it bounded. Never raises — a
+    logging failure must not turn a successful invocation into an error."""
+    from sqlalchemy import delete, func, select
+    from .models import FunctionCall
+    try:
+        joined = "\n".join(logs or [])
+        db.add(FunctionCall(
+            app_id=app_id, fn_name=fn_name, source=source, user_id=user_id or "",
+            trigger=trigger, ok=ok, status_code=status_code, error=(error or "")[:2000],
+            duration_ms=duration_ms, args_preview=_preview(args),
+            result_preview=_preview(result) if ok else "",
+            logs=joined[-_LOGS_CHARS:],
+        ))
+        await db.flush()
+        count = (await db.execute(
+            select(func.count()).select_from(FunctionCall).where(FunctionCall.app_id == app_id)
+        )).scalar_one()
+        if count > _CALLS_KEPT_PER_APP:
+            cutoff = (await db.execute(
+                select(FunctionCall.created_at)
+                .where(FunctionCall.app_id == app_id)
+                .order_by(FunctionCall.created_at.desc())
+                .offset(_CALLS_KEPT_PER_APP).limit(1)
+            )).scalar_one_or_none()
+            if cutoff is not None:
+                await db.execute(delete(FunctionCall).where(
+                    FunctionCall.app_id == app_id, FunctionCall.created_at <= cutoff))
+    except Exception:
+        logger.exception("could not record function call %s/%s", app_id, fn_name)
+
+
+async def list_calls(db: AsyncSession, app_id: str, fn_name: str | None = None,
+                     limit: int = 50) -> list[dict]:
+    from sqlalchemy import select
+    from .models import FunctionCall
+    stmt = select(FunctionCall).where(FunctionCall.app_id == app_id)
+    if fn_name:
+        stmt = stmt.where(FunctionCall.fn_name == fn_name)
+    rows = (await db.execute(
+        stmt.order_by(FunctionCall.created_at.desc()).limit(max(1, min(limit, 200)))
+    )).scalars().all()
+    return [{
+        "id": r.id, "fn_name": r.fn_name, "source": r.source, "trigger": r.trigger,
+        "ok": r.ok, "status_code": r.status_code, "error": r.error,
+        "duration_ms": r.duration_ms, "args_preview": r.args_preview,
+        "result_preview": r.result_preview, "logs": r.logs,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    } for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Developer view — what the Functions panel lists, and scaffolding
+# ---------------------------------------------------------------------------
+
+# Both SDK entry points — callFunction('name', args) and the useFunction('name')
+# hook — optionally with a TypeScript generic in between, which generated code
+# often spreads over several lines (useFunction<{ ok: boolean; ... }>('name')).
+_CALL_SITE_RE = re.compile(
+    r"(?:callFunction|useFunction)\s*(?:<[^()]*?>)?\s*\(\s*['\"`]([a-z][a-z0-9_-]{0,63})['\"`]",
+    re.DOTALL)
+_SRC_SUFFIXES = (".ts", ".tsx", ".js", ".jsx")
+
+
+def _draft_dir(app) -> Path:
+    return (Path(settings.app_data_dir) / app.id).resolve() / "draft" / "frontend"
+
+
+def _published_dir(app) -> Path | None:
+    v = int(app.current_version or 0)
+    if v <= 0:
+        return None
+    vd = (Path(settings.app_data_dir) / app.id).resolve() / "versions" / f"v{v}"
+    return vd if vd.is_dir() else None
+
+
+def _summary_of(source_text: str) -> str:
+    """First line of the module docstring (or the handler's) — the panel's
+    one-line description. Empty when the function has neither."""
+    import ast
+    try:
+        tree = ast.parse(source_text)
+    except SyntaxError:
+        return ""
+    doc = ast.get_docstring(tree)
+    if not doc:
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "handler":
+                doc = ast.get_docstring(node)
+                break
+    if not doc:
+        return ""
+    return doc.strip().splitlines()[0].strip()[:200]
+
+
+def _call_sites(draft_dir: Path) -> dict[str, list[str]]:
+    """Which UI files call which function — a static cross-reference over
+    src/, so the panel can show 'used by App.tsx' and flag orphans."""
+    sites: dict[str, list[str]] = {}
+    src = draft_dir / "src"
+    if not src.is_dir():
+        return sites
+    for path in src.rglob("*"):
+        if not path.is_file() or path.suffix not in _SRC_SUFFIXES:
+            continue
+        if "sdk" in path.relative_to(src).parts[:1]:
+            continue  # the vendored SDK defines callFunction; it doesn't call one
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = str(path.relative_to(draft_dir)).replace("\\", "/")
+        for m in _CALL_SITE_RE.finditer(text):
+            sites.setdefault(m.group(1), [])
+            if rel not in sites[m.group(1)]:
+                sites[m.group(1)].append(rel)
+    return sites
+
+
+def describe_functions(app) -> list[dict]:
+    """The DRAFT tree's server functions with everything the panel shows:
+    timeout, one-line summary, size, last modified, UI call sites, and whether
+    the current published version has the function too."""
+    draft = _draft_dir(app)
+    fdir = _functions_dir(draft)
+    if not fdir.is_dir():
+        return []
+    published = _published_dir(app)
+    sites = _call_sites(draft)
+    out = []
+    for f in sorted(fdir.iterdir()):
+        if not f.is_file() or f.suffix not in RUNTIMES or not _FN_NAME_RE.match(f.stem):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+            stat = f.stat()
+        except OSError:
+            continue
+        out.append({
+            "name": f.stem,
+            "runtime": RUNTIMES[f.suffix],
+            "path": f"server/functions/{f.name}",
+            "timeout_s": _extract_timeout(text),
+            "summary": _summary_of(text),
+            "size_bytes": stat.st_size,
+            "modified_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(stat.st_mtime)) + "Z",
+            "callers": sites.get(f.stem, []),
+            "in_published": bool(published and _find_fn_file(published, f.stem)),
+        })
+    return out
+
+
+_SCAFFOLD = '''"""{title}
+
+One-line summary shown in the Functions panel — replace this.
+"""
+from sdk import Ctx
+
+CONFIG = {{"timeout_s": 30}}  # optional; literal only, max 120
+
+
+def handler(args, ctx: Ctx):
+    """Called by the app's UI as callFunction('{name}', args)."""
+    ctx.log("{name} called with", args)
+    # rows = ctx.db.query("SELECT * FROM my_table", limit=50_000)["rows"]
+    return {{"ok": True, "echo": args}}
+'''
+
+
+def scaffold_function(app, name: str) -> str:
+    """Create server/functions/<name>.py from the starter template.
+    Returns the app-relative path. Raises FunctionError on a bad name or if
+    the function already exists."""
+    if not _FN_NAME_RE.match(name or ""):
+        raise FunctionError(
+            "Function names are lowercase letters, digits, '-' or '_', starting with a "
+            "letter (max 64 chars) — e.g. 'analyze-source'.", status_code=400)
+    draft = _draft_dir(app)
+    if _find_fn_file(draft, name):
+        raise FunctionError(f"A server function named '{name}' already exists.", status_code=409)
+    fdir = _functions_dir(draft)
+    fdir.mkdir(parents=True, exist_ok=True)
+    title = name.replace("-", " ").replace("_", " ").strip().capitalize()
+    (fdir / f"{name}.py").write_text(_SCAFFOLD.format(name=name, title=title), encoding="utf-8")
+    return f"server/functions/{name}.py"
 
 
 def _parse_envelope(stdout_bytes: bytes) -> dict | None:

@@ -136,6 +136,7 @@ async def init_db():
     from .tracing.models import AISpan  # noqa: F401
     from .decisions.models import AppDecision, DecisionCache  # noqa: F401
     from .python_packages.models import PythonPackage  # noqa: F401
+    from .functions.models import FunctionCall  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
