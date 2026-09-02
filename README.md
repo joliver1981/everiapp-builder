@@ -28,6 +28,9 @@ generated apps; you can also connect your own centralized databases.
 - **Governance** — secrets management (Fernet-encrypted), audit logging, SIEM
   forwarding, static security scanning, dependency scanning, and a publish
   approval workflow.
+- **Marketplace publishing** — publish apps to the EveriApp Marketplace
+  publicly, or privately to groups you belong to (a team, a client, a
+  portfolio of companies); members install them into their own platform.
 
 ## Repository layout
 

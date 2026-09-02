@@ -1321,7 +1321,7 @@ export function AppBuilderPage() {
           {currentApp.status === 'published' && (
             <button
               onClick={() => setShowMarketplaceDialog(true)}
-              title="Share this app publicly on the EveriApp Marketplace"
+              title="Publish this app to the EveriApp Marketplace — publicly or to your groups"
               className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <Upload size={14} />
