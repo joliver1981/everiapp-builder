@@ -1,8 +1,15 @@
-AIHub
-Copyright 2026 EveriAI, LLC
+EveriApp Builder
+Copyright 2026 EveriAI LLC
 
-This product is licensed under the Apache License, Version 2.0 (the "License").
-See the LICENSE file for the full terms.
+This product is licensed under the Business Source License 1.1 (the "License").
+See the LICENSE file for the full terms, including the Additional Use Grant and
+the Change Date on which each version converts to the Apache License 2.0.
+
+The app-sdk/ and app-template/ directories are licensed separately under the
+Apache License, Version 2.0 (see the LICENSE file in each directory).
+
+Versions up to and including v0.20.0 were released under the Apache License,
+Version 2.0, and remain available under that license.
 
 This software includes third-party open-source components, each distributed
 under its own license. Notable dependencies include FastAPI, SQLAlchemy,

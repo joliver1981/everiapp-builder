@@ -2,7 +2,7 @@
 name = "aihub-backend"
 version = "0.1.0"
 description = "AIHub Platform - AI-powered app development and deployment"
-license = {text = "Apache-2.0"}
+license = {text = "BUSL-1.1"}
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

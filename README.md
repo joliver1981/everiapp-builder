@@ -123,5 +123,20 @@ built-in secrets manager.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE). See [`NOTICE`](NOTICE) for
-attribution and third-party components.
+EveriApp Builder is **source-available** under the
+[Business Source License 1.1](LICENSE) (`BUSL-1.1`).
+
+- You can read, modify, and self-host the platform, including in production,
+  subject to the Additional Use Grant in the [LICENSE](LICENSE) file.
+- Each version converts to the
+  [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) four years
+  after its release.
+- `app-sdk/` and `app-template/` — the pieces that end up inside the
+  applications you build — are licensed under Apache 2.0 (see the `LICENSE`
+  file in each directory). Applications you build are yours.
+- Versions up to and including v0.20.0 were released under Apache 2.0 and
+  remain available under that license.
+
+See [`NOTICE`](NOTICE) for attribution and third-party components, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting changes. For alternative
+licensing arrangements, contact EveriAI LLC.
