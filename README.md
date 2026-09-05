@@ -1,13 +1,16 @@
 # AIHub
 
-AIHub is a self-hostable platform for building, deploying, and operating
-AI-generated web apps. Describe an app in natural language and AIHub generates a
-React + TypeScript application, verifies it (type-check → build → boot →
-runtime), versions it immutably, and deploys it to your own infrastructure.
+EveriApp (code name AIHub) is **RAD&D for the AI era** — rapid application
+development *and deployment* — and it runs in **your own environment**: your
+servers or your cloud, single-tenant. Describe it. Ship it. Share it.
 
-It is designed for **on-premise / single-tenant** use: your data, your models,
-your servers. SQLite is the default datastore for both the control plane and
-generated apps; you can also connect your own centralized databases.
+Every app is verified before it ships (type-check → build → boot → runtime),
+versioned immutably, and deployed blue/green with rollback to any number of
+targets. Bring the model providers you want, configure database and API
+connections once for every app to reuse, keep it behind your SSO with audit
+logs and approvals, and share apps publicly or privately with exactly the
+groups you choose. SQLite is the default datastore for both the control plane
+and generated apps; you can also connect your own centralized databases.
 
 > **Status:** early release (0.1.0). APIs and storage formats may change.
 
