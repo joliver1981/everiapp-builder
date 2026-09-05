@@ -1,6 +1,6 @@
 [project]
 name = "aihub-agent"
-version = "0.1.1"
+version = "0.1.2"
 description = "Deployment agent for the AIHub Platform — runs built apps on a target host with managed ports."
 license = {text = "BUSL-1.1"}
 requires-python = ">=3.10"
